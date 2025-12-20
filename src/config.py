@@ -4,6 +4,7 @@ Configuration file for WBC-Bench-2026 competition
 
 import os
 from pathlib import Path
+import torch
 
 class Config:
     # Paths - BASE_DIR is project root (parent of src/)
@@ -65,7 +66,7 @@ class Config:
     ]
     
     # Device
-    DEVICE = 'cuda' if os.environ.get('CUDA_VISIBLE_DEVICES') else 'cpu'
+    DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
     
     # Class weights (for handling imbalance)
     USE_CLASS_WEIGHTS = True
