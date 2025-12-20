@@ -2,6 +2,18 @@
 
 A comprehensive solution for the WBC-Bench-2026 Kaggle competition focused on White Blood Cell (WBC) image classification.
 
+## 🚀 **NEW TO THIS? START HERE!**
+
+1. **Read this first**: [`STEP_BY_STEP_START_HERE.md`](STEP_BY_STEP_START_HERE.md) - Complete day-by-day action plan
+2. **Full guide**: [`COMPLETE_GUIDE.md`](COMPLETE_GUIDE.md) - Everything you need to know
+3. **Quick reference**: [`QUICK_REFERENCE.md`](QUICK_REFERENCE.md) - Command cheat sheet
+
+## 📚 Documentation
+
+- **[STEP_BY_STEP_START_HERE.md](STEP_BY_STEP_START_HERE.md)** - Beginner-friendly day-by-day guide
+- **[COMPLETE_GUIDE.md](COMPLETE_GUIDE.md)** - Comprehensive strategy and techniques
+- **[QUICK_REFERENCE.md](QUICK_REFERENCE.md)** - Quick command reference
+
 ## 🎯 Competition Overview
 
 This competition involves classifying white blood cell images into 13 different classes:
