@@ -3,9 +3,14 @@ Script to train multiple models for ensembling
 Trains different architectures to create a diverse ensemble
 """
 
-import subprocess
 import sys
-from config import Config
+from pathlib import Path
+
+# Add project root to path
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
+
+from src.config import Config
 
 def train_model(model_name):
     """Train a single model by modifying config and running train.py"""
@@ -18,11 +23,12 @@ def train_model(model_name):
     original_model = config.MODEL_NAME
     
     # Update model name in config
-    import config as config_module
+    import src.config as config_module
+    original_model = config_module.Config.MODEL_NAME
     config_module.Config.MODEL_NAME = model_name
     
     # Import and run training
-    from train import main
+    from scripts.train import main
     main()
     
     # Restore original

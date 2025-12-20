@@ -46,18 +46,36 @@ wbc-bench-2026/
 └── phase2_eval.csv     # Phase 2 eval IDs
 ```
 
+## 📁 Project Structure
+
+This is a **research-grade, modular codebase** with clear separation of concerns:
+
+```
+wbc-bench-2026/
+├── src/              # Core package (models, data, config)
+├── scripts/          # Executable scripts
+├── utils/            # Utility functions
+├── docs/guides/      # Documentation
+└── outputs/          # Generated outputs (models, predictions)
+```
+
+See [`PROJECT_STRUCTURE.md`](PROJECT_STRUCTURE.md) for detailed structure.
+
 ## 🚀 Quick Start
 
 ### 1. Install Dependencies
 
 ```bash
 pip install -r requirements.txt
+
+# Optional: Install as package for easier imports
+pip install -e .
 ```
 
 ### 2. Explore the Dataset
 
 ```bash
-python explore_data.py
+python scripts/explore_data.py
 ```
 
 This will analyze the dataset distribution, class imbalance, and image statistics.
@@ -65,7 +83,7 @@ This will analyze the dataset distribution, class imbalance, and image statistic
 ### 3. Train Models
 
 ```bash
-python train.py
+python scripts/train.py
 ```
 
 This will:
@@ -78,7 +96,7 @@ This will:
 ### 4. Make Predictions
 
 ```bash
-python inference.py
+python scripts/inference.py
 ```
 
 This will:
@@ -127,7 +145,7 @@ This will:
 
 ## ⚙️ Configuration
 
-Edit `config.py` to customize:
+Edit `src/config.py` to customize:
 - Model architecture
 - Training hyperparameters
 - Data augmentation settings

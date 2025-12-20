@@ -6,8 +6,8 @@ import os
 from pathlib import Path
 
 class Config:
-    # Paths
-    BASE_DIR = Path(__file__).parent
+    # Paths - BASE_DIR is project root (parent of src/)
+    BASE_DIR = Path(__file__).parent.parent
     PHASE1_DIR = BASE_DIR / 'phase1'
     PHASE2_TRAIN_DIR = BASE_DIR / 'phase2' / 'train'
     PHASE2_TEST_DIR = BASE_DIR / 'phase2' / 'test'

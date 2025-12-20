@@ -17,9 +17,16 @@ warnings.filterwarnings('ignore')
 from PIL import Image
 import albumentations as A
 
-from config import Config
-from dataset import WBCDataset, get_train_transforms, get_val_transforms
-from models import get_model, get_loss_fn
+import sys
+from pathlib import Path
+
+# Add project root to path
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
+
+from src.config import Config
+from src.data import WBCDataset, get_train_transforms, get_val_transforms
+from src.models import get_model, get_loss_fn
 from sklearn.model_selection import StratifiedKFold
 from sklearn.utils.class_weight import compute_class_weight
 
