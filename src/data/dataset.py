@@ -194,10 +194,12 @@ def get_train_transforms(img_size=384, is_rare_class=False):
             min_holes=4,
             p=0.4
         ),
-        A.Cutout(
-            num_holes=8,
-            max_h_size=32,
-            max_w_size=32,
+        # Additional dropout for regularization (using CoarseDropout instead of Cutout)
+        A.CoarseDropout(
+            max_holes=8,
+            max_height=32,
+            max_width=32,
+            min_holes=2,
             p=0.3
         ),
     ]
@@ -258,10 +260,12 @@ def get_train_transforms(img_size=384, is_rare_class=False):
                 min_holes=6,  # Increased
                 p=0.6  # Increased probability
             ),
-            A.Cutout(
-                num_holes=12,  # Increased
-                max_h_size=48,  # Increased
-                max_w_size=48,  # Increased
+            # Additional dropout for rare classes (using CoarseDropout instead of Cutout)
+            A.CoarseDropout(
+                max_holes=12,  # Increased
+                max_height=48,  # Increased
+                max_width=48,  # Increased
+                min_holes=3,  # Increased
                 p=0.5  # Increased probability
             ),
         ]
