@@ -592,14 +592,25 @@ def train_fold(fold, train_df, val_df, config):
         pin_memory=config.PIN_MEMORY
     )
     
-    # Create model with increased dropout for better regularization
-    model = get_model(
-        model_name=config.MODEL_NAME,
-        num_classes=train_dataset.num_classes,
-        pretrained=config.PRETRAINED,
-        drop_rate=0.4,  # Increased from default 0.3 for better regularization
-        drop_path_rate=0.3  # Increased from default 0.2 for better regularization
-    ).to(config.DEVICE)
+    # Create model with optimized regularization for ConvNeXt
+    if config.MODEL_NAME.startswith('convnext'):
+        # ConvNeXt uses drop_path_rate only (no drop_rate)
+        model = get_model(
+            model_name=config.MODEL_NAME,
+            num_classes=train_dataset.num_classes,
+            pretrained=config.PRETRAINED,
+            drop_rate=None,  # ConvNeXt doesn't use drop_rate
+            drop_path_rate=0.3  # Optimized for medical imaging
+        ).to(config.DEVICE)
+    else:
+        # Other models (EfficientNet, etc.)
+        model = get_model(
+            model_name=config.MODEL_NAME,
+            num_classes=train_dataset.num_classes,
+            pretrained=config.PRETRAINED,
+            drop_rate=0.4,  # Increased from default 0.3 for better regularization
+            drop_path_rate=0.3  # Increased from default 0.2 for better regularization
+        ).to(config.DEVICE)
     
     # Compile model for faster training (PyTorch 2.0+)
     if config.USE_TORCH_COMPILE and hasattr(torch, 'compile'):

@@ -1,6 +1,18 @@
+
+
+gdown 1nbRi3vuo414PigZGpNa6746t3Sy1EdZW -O dataset.zip
+apt-get update && apt-get install -y unzip
+unzip dataset.zip
+pip install -r requirements.txt
+
 # WBC-Bench-2026 Competition Solution
 
-A comprehensive solution for the WBC-Bench-2026 Kaggle competition focused on White Blood Cell (WBC) image classification.
+A comprehensive solution for the **WBCBench 2026** Kaggle competition focused on White Blood Cell (WBC) image classification.
+
+**Competition Links:**
+- 🏆 [Kaggle Competition Page](https://www.kaggle.com/competitions/wbc-bench-2026)
+- 📋 [WBCBench 2026 Website](https://www.kaggle.com/competitions/wbc-bench-2026) (check competition overview for official website)
+- 📝 [Participation Form](https://www.kaggle.com/competitions/wbc-bench-2026) (see competition overview)
 
 ## 🚀 **NEW TO THIS? START HERE!**
 
@@ -16,35 +28,119 @@ A comprehensive solution for the WBC-Bench-2026 Kaggle competition focused on Wh
 
 ## 🎯 Competition Overview
 
+**WBCBench 2026** is an ISBI 2026 Grand Challenge designed to benchmark the robustness of machine learning models for hematological image analysis. This competition evaluates algorithms for automated white blood cell (WBC) classification under:
+- **Severe class imbalance** - Rare classes must be accurately identified
+- **Fine-grained morphological variation** - Subtle differences between similar cell types
+- **Simulated domain shift** - Controlled variations in scanner characteristics and imaging settings (noise, blur, color perturbations)
+
+### Competition Goals
+
+1. **Comparability & Reproducibility**: Standardized splits and an open evaluator with a fixed submission format
+2. **Rare-Class Reliability**: Prioritize macro-F1 and require class-wise reporting to highlight minority performance
+3. **Robustness**: Models must perform well under realistic variations in imaging conditions
+
+### Cell Type Classes
+
 This competition involves classifying white blood cell images into 13 different classes:
-- BA (Basophil)
-- BL (Blast)
-- BNE (Band Neutrophil)
-- EO (Eosinophil)
-- LY (Lymphocyte)
-- MMY (Metamyelocyte)
-- MO (Monocyte)
-- MY (Myelocyte)
-- PC (Plasma Cell)
-- PLY (Prolymphocyte)
-- PMY (Promyelocyte)
-- SNE (Segmented Neutrophil)
-- VLY (Variant Lymphocyte)
+- **BA** (Basophil)
+- **BL** (Blast cell) - *Clinically critical rare class*
+- **BNE** (Band-form neutrophil)
+- **EO** (Eosinophil)
+- **LY** (Lymphocyte)
+- **MMY** (Metamyelocyte)
+- **MO** (Monocyte)
+- **MY** (Myelocyte)
+- **PC** (Plasma cell)
+- **PLY** (Prolymphocyte)
+- **PMY** (Promyelocyte)
+- **SNE** (Segmented neutrophil)
+- **VLY** (Variant/atypical lymphocyte)
+
+## ⚠️ **CRITICAL COMPETITION DETAILS**
+
+### Evaluation Metric
+
+**Primary Metric: Macro-Averaged F1 Score**
+
+The competition uses **macro-averaged F1 score** as the primary evaluation metric. This metric treats each class equally, making it suitable for highly imbalanced datasets and ensuring that rare-cell performance is appropriately measured.
+
+**Formula:**
+- For each class `c`, compute precision `P_c`, recall `R_c`, and F1 score `F1_c`
+- Macro-averaged F1 = `(1/C) × Σ F1_c` where `C` is the total number of classes
+
+**Tie-Breaking Criteria** (in order):
+1. Balanced Accuracy
+2. Macro-Averaged Precision
+3. Macro-Averaged Specificity
+4. Inference Time (faster models ranked higher)
+
+### Key Challenges
+
+1. **Severe Class Imbalance**: Rare classes (especially BL - Blast cells) must be accurately identified despite limited training examples
+2. **Domain Shift**: Test images contain controlled variations (noise, blur, color perturbations) simulating real-world scanner variability
+3. **Patient-Level Separation**: Strict patient-level separation between train/test splits - no data leakage allowed
+4. **Fine-Grained Classification**: Subtle morphological differences between similar cell types (e.g., different neutrophil stages)
+
+### Dataset Structure & Phases
+
+**Phase 1** (15% of patients - 74 patients, 8,288 images):
+- Pristine training set with high-quality images
+- Located in `phase1/` directory
+- Labels in `phase1_label.csv`
+
+**Phase 2** (85% of patients with image degradation):
+- **Training** (≈45% of patients - 222 patients, 24,897 images): `phase2/train/`
+- **Evaluation** (≈10% of patients - 49 patients, 5,350 images): `phase2/eval/` 
+  - ⚠️ **May be used for training** (validation set)
+- **Test** (≈30% of patients - 148 patients, 16,477 images): `phase2/test/`
+  - ⚠️ **Used for leaderboard ranking** - no labels provided
+
+**Important Notes:**
+- Patient-level separation is maintained between all splits
+- Phase 2 images contain simulated domain shift (noise, blur, color variations)
+- Labels use consistent abbreviations across all CSV files
+
+### Submission Requirements
+
+**Format:**
+- CSV file with columns: `ID, labels`
+- One row per test image
+- Labels must use the exact abbreviations listed above
+
+**Code Submission (Top 5 Teams):**
+- Top-ranking participants must submit:
+  - Trained models
+  - Complete inference code or containerized environment
+  - Sufficient documentation to reproduce final predictions
+- Teams whose results cannot be reproduced may be disqualified
+
+**Competition Rules:**
+- Maximum 10 submissions per day
+- Maximum team size: 5 members
+- External data/models allowed if publicly available and reasonably accessible
+- Code sharing must be public (on Kaggle forums) if shared during competition
 
 ## 📁 Dataset Structure
 
 ```
-wbc-bench-2026/
-├── phase1/              # Phase 1 training images
-├── phase1_label.csv     # Phase 1 labels
+data/
+├── phase1/
+│   └── images/                 # Phase 1 training images (8,288 images, 74 patients)
 ├── phase2/
-│   ├── train/          # Phase 2 training images
-│   ├── test/           # Phase 2 test images (no labels)
-│   └── eval/           # Phase 2 eval images (no labels)
-├── phase2_train.csv    # Phase 2 training labels
-├── phase2_test.csv     # Phase 2 test IDs
-└── phase2_eval.csv     # Phase 2 eval IDs
+│   ├── train/                  # Phase 2 training images (24,897 images, 222 patients)
+│   ├── eval/                   # Phase 2 eval images (5,350 images, 49 patients) - may use for training
+│   └── test/                   # Phase 2 test images (16,477 images, 148 patients) - for leaderboard
+├── phase1_label.csv            # Labels for Phase 1 training images
+├── phase2_train.csv            # Labels for Phase 2 'train' images
+├── phase2_eval.csv             # Labels for Phase 2 'eval' images (validation, but may use for training)
+└── phase2_test.csv             # Template for Test set submission (includes IDs, no labels)
 ```
+
+**Dataset Summary:**
+- **Total Images**: ~55,000+ images across all phases
+- **Total Patients**: ~493 patients (strict patient-level separation)
+- **Image Characteristics**: Single-site microscopic blood smear acquisitions with standardized staining
+- **Domain Shift**: Phase 2 images contain controlled noise, blur, and color perturbations simulating real-world scanner variability
 
 ## 📁 Project Structure
 
@@ -171,13 +267,23 @@ With this solution, you should achieve:
 
 ## 📝 Submission Format
 
-The predictions will be saved in CSV format:
+**Kaggle Competition**: [WBCBench 2026](https://www.kaggle.com/competitions/wbc-bench-2026)
+
+The predictions must be submitted in CSV format with exactly two columns:
 ```csv
 ID,labels
 01447013.jpg,SNE
 01447014.jpg,LY
+01447015.jpg,BL
 ...
 ```
+
+**Requirements:**
+- Column headers must be exactly: `ID,labels` (case-sensitive)
+- `ID` column: Image filename (e.g., `01447013.jpg`)
+- `labels` column: One of the 13 class abbreviations (BA, BL, BNE, EO, LY, MMY, MO, MY, PC, PLY, PMY, SNE, VLY)
+- One row per test image
+- No header row needed if submitting via Kaggle interface
 
 ## 🎓 Best Practices Used
 

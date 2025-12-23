@@ -25,7 +25,7 @@ class Config:
     LOG_DIR = OUTPUT_DIR / 'logs'
     
     # Model settings
-    MODEL_NAME = 'efficientnet_b5'  # Upgraded from B4 to B5 for better accuracy
+    MODEL_NAME = 'convnext_base'  # ConvNeXt-Base: Modern CNN architecture, better than EfficientNet
     PRETRAINED = True
     NUM_CLASSES = 13  # Will be updated based on actual classes
     
@@ -73,11 +73,11 @@ class Config:
     TTA = True  # Test Time Augmentation
     TTA_NUM = 5  # Number of TTA iterations
     
-    # Ensemble
+    # Ensemble (ordered by priority)
     ENSEMBLE_MODELS = [
-        'efficientnet_b4',
-        'efficientnet_b5',
-        'convnext_base',
+        'convnext_base',  # Primary: Best architecture
+        'efficientnet_b5',  # Secondary: Backup
+        # 'swin_base_patch4_window7_224',  # Optional: Transformer variant
     ]
     
     # Device

@@ -40,7 +40,6 @@ setup(
         "console_scripts": [
             "wbc-train=scripts.train:main",
             "wbc-inference=scripts.inference:main",
-            "wbc-explore=scripts.explore_data:analyze_dataset",
         ],
     },
 )

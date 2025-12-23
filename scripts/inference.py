@@ -32,16 +32,18 @@ def load_model(model_path, device='cuda'):
     idx_to_class = checkpoint['idx_to_class']
     num_classes = len(class_to_idx)
     
-    # Infer model name from path
+    # Infer model name from path (prioritize ConvNeXt)
     model_name = Config.MODEL_NAME
-    if 'efficientnet_b5' in str(model_path):
+    if 'convnext_base' in str(model_path):
+        model_name = 'convnext_base'
+    elif 'convnext' in str(model_path):
+        model_name = 'convnext_base'  # Default ConvNeXt
+    elif 'efficientnet_b5' in str(model_path):
         model_name = 'efficientnet_b5'
     elif 'efficientnet_b4' in str(model_path):
         model_name = 'efficientnet_b4'
     elif 'efficientnet' in str(model_path):
         model_name = 'efficientnet_b4'  # Default fallback
-    elif 'convnext' in str(model_path):
-        model_name = 'convnext_base'
     
     model = get_model(model_name, num_classes=num_classes, pretrained=False)
     model.load_state_dict(checkpoint['model_state_dict'])

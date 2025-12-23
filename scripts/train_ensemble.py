@@ -37,10 +37,9 @@ def train_model(model_name):
 def main():
     """Train multiple models for ensemble"""
     models_to_train = [
-        'efficientnet_b4',
-        'efficientnet_b5',
-        'convnext_base',
-        # Add more models as needed
+        'convnext_base',  # Primary: Best architecture
+        'efficientnet_b5',  # Secondary: Backup
+        # Add more models as needed (e.g., 'swin_base_patch4_window7_224')
     ]
     
     print("Training ensemble models...")
