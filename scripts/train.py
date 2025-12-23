@@ -201,8 +201,8 @@ def validate(model, dataloader, criterion, device, class_names=None, use_amp=Fal
             labels = labels.to(device, non_blocking=True)
             
             with autocast(enabled=use_amp):
-            outputs = model(images)
-            loss = criterion(outputs, labels)
+                outputs = model(images)
+                loss = criterion(outputs, labels)
             
             # Get probabilities for debugging
             probs = torch.softmax(outputs, dim=1)
@@ -633,13 +633,13 @@ def train_fold(fold, train_df, val_df, config):
         ).to(config.DEVICE)
     else:
         # Other models (EfficientNet, etc.)
-    model = get_model(
-        model_name=config.MODEL_NAME,
-        num_classes=train_dataset.num_classes,
+        model = get_model(
+            model_name=config.MODEL_NAME,
+            num_classes=train_dataset.num_classes,
             pretrained=config.PRETRAINED,
             drop_rate=0.3,  # Reduced from 0.4
             drop_path_rate=0.2  # Reduced from 0.3
-    ).to(config.DEVICE)
+        ).to(config.DEVICE)
     
     # Compile model for faster training (PyTorch 2.0+)
     if config.USE_TORCH_COMPILE and hasattr(torch, 'compile'):
