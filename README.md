@@ -1,5 +1,5 @@
-
-
+git clone ""
+pip install gdown
 gdown 1nbRi3vuo414PigZGpNa6746t3Sy1EdZW -O dataset.zip
 apt-get update && apt-get install -y unzip
 unzip dataset.zip

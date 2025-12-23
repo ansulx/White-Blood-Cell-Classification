@@ -193,6 +193,7 @@ def validate(model, dataloader, criterion, device, class_names=None, use_amp=Fal
     total = 0
     all_preds = []
     all_labels = []
+    all_probs = []  # Store probabilities for debugging
     
     with torch.no_grad():
         for images, labels, _ in tqdm(dataloader, desc='Validating'):
@@ -202,6 +203,10 @@ def validate(model, dataloader, criterion, device, class_names=None, use_amp=Fal
             with autocast(enabled=use_amp):
                 outputs = model(images)
                 loss = criterion(outputs, labels)
+            
+            # Get probabilities for debugging
+            probs = torch.softmax(outputs, dim=1)
+            all_probs.extend(probs.cpu().numpy())
             
             running_loss += loss.item()
             _, predicted = torch.max(outputs.data, 1)
@@ -213,6 +218,16 @@ def validate(model, dataloader, criterion, device, class_names=None, use_amp=Fal
     
     epoch_loss = running_loss / len(dataloader)
     epoch_acc = 100 * correct / total
+    
+    # Debug: Print prediction confidence
+    all_probs = np.array(all_probs)
+    avg_confidence = np.mean(np.max(all_probs, axis=1))
+    print(f"  Validation Debug - Avg Prediction Confidence: {avg_confidence:.4f}")
+    print(f"  Validation Debug - Max Confidence: {np.max(all_probs):.4f}, Min Confidence: {np.min(np.max(all_probs, axis=1)):.4f}")
+    
+    # Debug: Check if model is predicting same class always
+    unique_preds = len(np.unique(all_preds))
+    print(f"  Validation Debug - Unique predicted classes: {unique_preds}/13")
     
     # Compute competition metrics
     metrics = compute_all_metrics(
@@ -556,12 +571,12 @@ def train_fold(fold, train_df, val_df, config):
         label_name = val_dataset.idx_to_class[label_idx]
         print(f"  {img_name}: label_idx={label_idx}, label_name={label_name}")
     
-    # Compute class weights with stronger weighting for rare classes
+    # Compute class weights with moderate weighting for rare classes
     if config.USE_CLASS_WEIGHTS:
         class_weights = compute_class_weights(
             train_df['labels'].values, 
             method='balanced',
-            power=1.5  # Stronger weighting for rare classes
+            power=1.0  # Reduced from 1.5 - extreme weights causing instability
         )
         print(f"\nClass Weights (for imbalanced handling):")
         for cls in sorted(class_weights.keys()):
@@ -592,7 +607,7 @@ def train_fold(fold, train_df, val_df, config):
         pin_memory=config.PIN_MEMORY
     )
     
-    # Create model with optimized regularization for ConvNeXt
+    # Create model with moderate regularization (reduced to improve validation)
     if config.MODEL_NAME.startswith('convnext'):
         # ConvNeXt uses drop_path_rate only (no drop_rate)
         model = get_model(
@@ -600,7 +615,7 @@ def train_fold(fold, train_df, val_df, config):
             num_classes=train_dataset.num_classes,
             pretrained=config.PRETRAINED,
             drop_rate=None,  # ConvNeXt doesn't use drop_rate
-            drop_path_rate=0.3  # Optimized for medical imaging
+            drop_path_rate=0.2  # Reduced from 0.3 - too much dropout hurting validation
         ).to(config.DEVICE)
     else:
         # Other models (EfficientNet, etc.)
@@ -608,8 +623,8 @@ def train_fold(fold, train_df, val_df, config):
             model_name=config.MODEL_NAME,
             num_classes=train_dataset.num_classes,
             pretrained=config.PRETRAINED,
-            drop_rate=0.4,  # Increased from default 0.3 for better regularization
-            drop_path_rate=0.3  # Increased from default 0.2 for better regularization
+            drop_rate=0.3,  # Reduced from 0.4
+            drop_path_rate=0.2  # Reduced from 0.3
         ).to(config.DEVICE)
     
     # Compile model for faster training (PyTorch 2.0+)
@@ -657,24 +672,26 @@ def train_fold(fold, train_df, val_df, config):
         weight_decay=config.WEIGHT_DECAY
     )
     
-    # Learning rate scheduler with warmup and cosine annealing
+    # Learning rate scheduler with warmup and slower cosine annealing (for better validation)
     if config.USE_WARMUP:
-        # Warmup + Cosine Annealing with minimum LR
+        # Warmup + Slower Cosine Annealing with minimum LR
         def lr_lambda(epoch):
             if epoch < config.WARMUP_EPOCHS:
                 # Linear warmup
                 return (epoch + 1) / config.WARMUP_EPOCHS
             else:
-                # Cosine annealing after warmup with minimum LR of 1e-6
+                # Slower cosine annealing - keep LR higher longer for validation learning
                 progress = (epoch - config.WARMUP_EPOCHS) / (config.NUM_EPOCHS - config.WARMUP_EPOCHS)
                 min_lr_ratio = 1e-6 / config.LEARNING_RATE  # Minimum LR as ratio
-                return min_lr_ratio + (1 - min_lr_ratio) * 0.5 * (1 + np.cos(np.pi * progress))
+                # Slower decay - multiply progress by 0.8 to slow down
+                adjusted_progress = progress * 0.8  # Slower decay
+                return min_lr_ratio + (1 - min_lr_ratio) * 0.5 * (1 + np.cos(np.pi * adjusted_progress))
         
         scheduler = LambdaLR(optimizer, lr_lambda)
         print(f"\nLearning Rate Schedule:")
         print(f"  Warmup epochs: {config.WARMUP_EPOCHS}")
         print(f"  Initial LR: {config.LEARNING_RATE}")
-        print(f"  Schedule: Linear warmup → Cosine annealing")
+        print(f"  Schedule: Linear warmup → Slow Cosine annealing (for better validation)")
     else:
         scheduler = CosineAnnealingLR(optimizer, T_max=config.NUM_EPOCHS, eta_min=1e-6)
     
