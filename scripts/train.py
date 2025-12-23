@@ -160,7 +160,7 @@ def train_epoch(model, dataloader, criterion, optimizer, device, scheduler=None,
     epoch_acc = 100 * correct / total
     return epoch_loss, epoch_acc
 
-def validate(model, dataloader, criterion, device, class_names=None):
+def validate(model, dataloader, criterion, device, class_names=None, use_amp=False):
     """Validate model and compute competition metrics"""
     model.eval()
     running_loss = 0.0
@@ -174,7 +174,7 @@ def validate(model, dataloader, criterion, device, class_names=None):
             images = images.to(device, non_blocking=True)
             labels = labels.to(device, non_blocking=True)
             
-            with autocast(enabled=class_names is not None):  # Use AMP if available
+            with autocast(enabled=use_amp):
                 outputs = model(images)
                 loss = criterion(outputs, labels)
             
