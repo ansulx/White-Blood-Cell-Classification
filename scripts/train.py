@@ -36,14 +36,37 @@ from src.metrics import compute_all_metrics, print_classification_report
 from sklearn.model_selection import StratifiedKFold
 from sklearn.utils.class_weight import compute_class_weight
 
-def compute_class_weights(labels):
-    """Compute class weights for imbalanced dataset"""
+def compute_class_weights(labels, method='balanced', power=1.0):
+    """
+    Compute class weights for imbalanced dataset with stronger weighting for rare classes
+    
+    Args:
+        labels: Array of class labels
+        method: 'balanced' or 'inverse_freq'
+        power: Power to apply to inverse frequency (higher = stronger weighting)
+    """
     unique_labels = np.unique(labels)
-    class_weights = compute_class_weight(
-        'balanced',
-        classes=unique_labels,
-        y=labels
-    )
+    
+    if method == 'balanced':
+        class_weights = compute_class_weight(
+            'balanced',
+            classes=unique_labels,
+            y=labels
+        )
+    else:  # inverse_freq
+        from collections import Counter
+        label_counts = Counter(labels)
+        total = len(labels)
+        class_weights = []
+        for label in unique_labels:
+            freq = label_counts[label] / total
+            # Inverse frequency with power scaling
+            weight = (1.0 / freq) ** power
+            class_weights.append(weight)
+        # Normalize to have mean of 1
+        class_weights = np.array(class_weights)
+        class_weights = class_weights / class_weights.mean()
+    
     return dict(zip(unique_labels, class_weights))
 
 def mixup_data(x, y, alpha=1.0):
@@ -104,7 +127,7 @@ def mixup_criterion(criterion, pred, y_a, y_b, lam):
 
 def train_epoch(model, dataloader, criterion, optimizer, device, scheduler=None, 
                 gradient_clip_value=None, use_mixup=False, mixup_alpha=0.4,
-                use_cutmix=False, cutmix_alpha=1.0, use_amp=False, scaler=None):
+                use_cutmix=False, cutmix_alpha=1.0, use_amp=False, scaler=None, config=None):
     """Train for one epoch with mixed precision support"""
     model.train()
     running_loss = 0.0
@@ -118,12 +141,14 @@ def train_epoch(model, dataloader, criterion, optimizer, device, scheduler=None,
         
         # Mixed precision training
         with autocast(enabled=use_amp):
-            # Apply Mixup or CutMix
-            if use_cutmix and np.random.rand() < 0.5:
+            # Apply Mixup or CutMix (with configurable probability)
+            mixup_cutmix_prob = getattr(config, 'MIXUP_CUTMIX_PROB', 0.5) if config is not None else 0.5
+            
+            if use_cutmix and np.random.rand() < mixup_cutmix_prob:
                 images, y_a, y_b, lam = cutmix_data(images, labels, cutmix_alpha)
                 outputs = model(images)
                 loss = mixup_criterion(criterion, outputs, y_a, y_b, lam)
-            elif use_mixup and np.random.rand() < 0.5:
+            elif use_mixup and np.random.rand() < mixup_cutmix_prob:
                 images, y_a, y_b, lam = mixup_data(images, labels, mixup_alpha)
                 outputs = model(images)
                 loss = mixup_criterion(criterion, outputs, y_a, y_b, lam)
@@ -475,7 +500,7 @@ def train_fold(fold, train_df, val_df, config):
         # Use standard augmentation for all classes
         train_transform = get_train_transforms(config.IMG_SIZE, is_rare_class=False)
     
-    # Create datasets
+    # CRITICAL FIX: Create train dataset first to establish class mapping
     train_dataset = CombinedDataset(
         train_df, 
         train_transform, 
@@ -483,6 +508,9 @@ def train_fold(fold, train_df, val_df, config):
         rare_classes=rare_classes,
         class_aware_aug=config.USE_CLASS_AWARE_AUG
     )
+    
+    # CRITICAL FIX: Val dataset MUST use the SAME class_to_idx as train_dataset
+    # Create val dataset with shared class mapping
     val_dataset = CombinedDataset(
         val_df, 
         get_val_transforms(config.IMG_SIZE), 
@@ -491,11 +519,55 @@ def train_fold(fold, train_df, val_df, config):
         class_aware_aug=False
     )
     
-    # Compute class weights
+    # CRITICAL FIX: Ensure validation uses same class mapping as training
+    val_dataset.unique_classes = train_dataset.unique_classes
+    val_dataset.class_to_idx = train_dataset.class_to_idx
+    val_dataset.idx_to_class = train_dataset.idx_to_class
+    val_dataset.num_classes = train_dataset.num_classes
+    
+    # Verify all validation labels exist in training classes
+    val_labels = set(val_df['labels'].unique())
+    train_labels = set(train_df['labels'].unique())
+    if val_labels != train_labels:
+        print(f"WARNING: Validation has different classes!")
+        print(f"Train classes: {sorted(train_labels)}")
+        print(f"Val classes: {sorted(val_labels)}")
+        missing_in_train = val_labels - train_labels
+        if missing_in_train:
+            print(f"ERROR: Validation has classes not in training: {missing_in_train}")
+            raise ValueError("Validation set contains classes not in training set!")
+    
+    # Debug: Print label mapping verification
+    print(f"\nLabel Mapping Verification:")
+    print(f"  Train classes: {len(train_dataset.unique_classes)} classes")
+    print(f"  Val classes: {len(val_dataset.unique_classes)} classes")
+    print(f"  Class mapping: {train_dataset.class_to_idx}")
+    
+    # Verify a few samples
+    print(f"\nSample Verification (first 3 train samples):")
+    for i in range(min(3, len(train_dataset))):
+        _, label_idx, img_name = train_dataset[i]
+        label_name = train_dataset.idx_to_class[label_idx]
+        print(f"  {img_name}: label_idx={label_idx}, label_name={label_name}")
+    
+    print(f"\nSample Verification (first 3 val samples):")
+    for i in range(min(3, len(val_dataset))):
+        _, label_idx, img_name = val_dataset[i]
+        label_name = val_dataset.idx_to_class[label_idx]
+        print(f"  {img_name}: label_idx={label_idx}, label_name={label_name}")
+    
+    # Compute class weights with stronger weighting for rare classes
     if config.USE_CLASS_WEIGHTS:
-        class_weights = compute_class_weights(train_df['labels'].values)
+        class_weights = compute_class_weights(
+            train_df['labels'].values, 
+            method='balanced',
+            power=1.5  # Stronger weighting for rare classes
+        )
+        print(f"\nClass Weights (for imbalanced handling):")
+        for cls in sorted(class_weights.keys()):
+            print(f"  {cls}: {class_weights[cls]:.4f}")
         weights = [class_weights[label] for label in train_df['labels'].values]
-        sampler = WeightedRandomSampler(weights, len(weights))
+        sampler = WeightedRandomSampler(weights, len(weights), replacement=True)
         train_loader = DataLoader(
             train_dataset,
             batch_size=config.BATCH_SIZE,
@@ -520,11 +592,13 @@ def train_fold(fold, train_df, val_df, config):
         pin_memory=config.PIN_MEMORY
     )
     
-    # Create model
+    # Create model with increased dropout for better regularization
     model = get_model(
         model_name=config.MODEL_NAME,
         num_classes=train_dataset.num_classes,
-        pretrained=config.PRETRAINED
+        pretrained=config.PRETRAINED,
+        drop_rate=0.4,  # Increased from default 0.3 for better regularization
+        drop_path_rate=0.3  # Increased from default 0.2 for better regularization
     ).to(config.DEVICE)
     
     # Compile model for faster training (PyTorch 2.0+)
@@ -541,11 +615,21 @@ def train_fold(fold, train_df, val_df, config):
     # Loss and optimizer
     label_smoothing = config.LABEL_SMOOTHING if config.USE_LABEL_SMOOTHING else 0.0
     
+    # Use weighted loss with label smoothing for better rare class handling
     if config.USE_CLASS_WEIGHTS:
         class_weights_list = [class_weights[cls] for cls in train_dataset.unique_classes]
+        # Convert to tensor and normalize
+        class_weights_tensor = torch.FloatTensor(class_weights_list).to(config.DEVICE)
+        class_weights_tensor = class_weights_tensor / class_weights_tensor.mean()  # Normalize
+        
+        print(f"\nLoss Configuration:")
+        print(f"  Using weighted CrossEntropyLoss")
+        print(f"  Label smoothing: {label_smoothing}")
+        print(f"  Class weights (normalized): {class_weights_tensor.cpu().numpy()}")
+        
         criterion = get_loss_fn(
             'ce', 
-            class_weights=class_weights_list, 
+            class_weights=class_weights_tensor, 
             device=config.DEVICE,
             label_smoothing=label_smoothing
         )
@@ -562,21 +646,26 @@ def train_fold(fold, train_df, val_df, config):
         weight_decay=config.WEIGHT_DECAY
     )
     
-    # Learning rate scheduler with warmup
+    # Learning rate scheduler with warmup and cosine annealing
     if config.USE_WARMUP:
-        # Warmup + Cosine Annealing
+        # Warmup + Cosine Annealing with minimum LR
         def lr_lambda(epoch):
             if epoch < config.WARMUP_EPOCHS:
                 # Linear warmup
                 return (epoch + 1) / config.WARMUP_EPOCHS
             else:
-                # Cosine annealing after warmup
+                # Cosine annealing after warmup with minimum LR of 1e-6
                 progress = (epoch - config.WARMUP_EPOCHS) / (config.NUM_EPOCHS - config.WARMUP_EPOCHS)
-                return 0.5 * (1 + np.cos(np.pi * progress))
+                min_lr_ratio = 1e-6 / config.LEARNING_RATE  # Minimum LR as ratio
+                return min_lr_ratio + (1 - min_lr_ratio) * 0.5 * (1 + np.cos(np.pi * progress))
         
         scheduler = LambdaLR(optimizer, lr_lambda)
+        print(f"\nLearning Rate Schedule:")
+        print(f"  Warmup epochs: {config.WARMUP_EPOCHS}")
+        print(f"  Initial LR: {config.LEARNING_RATE}")
+        print(f"  Schedule: Linear warmup → Cosine annealing")
     else:
-        scheduler = CosineAnnealingLR(optimizer, T_max=config.NUM_EPOCHS)
+        scheduler = CosineAnnealingLR(optimizer, T_max=config.NUM_EPOCHS, eta_min=1e-6)
     
     # Training loop
     best_val_macro_f1 = 0.0  # Track Macro-F1 (primary competition metric)
@@ -609,7 +698,8 @@ def train_fold(fold, train_df, val_df, config):
             use_cutmix=config.USE_CUTMIX,
             cutmix_alpha=config.CUTMIX_ALPHA,
             use_amp=config.USE_MIXED_PRECISION,
-            scaler=scaler
+            scaler=scaler,
+            config=config
         )
         
         # Get class names for metrics

@@ -32,8 +32,8 @@ class Config:
     # Training settings
     BATCH_SIZE = 128  # Optimized for H200 (141GB memory) - was 32
     NUM_EPOCHS = 50
-    LEARNING_RATE = 5e-5  # Reduced from 1e-4 for better convergence
-    WEIGHT_DECAY = 5e-4  # Increased from 1e-4 for better regularization
+    LEARNING_RATE = 1e-4  # Increased from 5e-5 for better learning (was too conservative)
+    WEIGHT_DECAY = 1e-3  # Increased from 5e-4 for stronger regularization
     NUM_WORKERS = 8  # Increased for faster data loading (was 4)
     PIN_MEMORY = True
     
@@ -43,7 +43,7 @@ class Config:
     
     # Learning rate scheduling
     USE_WARMUP = True  # Warmup for better convergence
-    WARMUP_EPOCHS = 5  # Number of warmup epochs
+    WARMUP_EPOCHS = 3  # Reduced from 5 - faster warmup, more training time
     USE_GRADIENT_CLIPPING = True  # Prevent gradient explosion
     GRADIENT_CLIP_VALUE = 1.0  # Clip gradients at this value
     
@@ -52,12 +52,13 @@ class Config:
     MEAN = [0.485, 0.456, 0.406]  # ImageNet normalization
     STD = [0.229, 0.224, 0.225]
     
-    # Data augmentation
+    # Data augmentation (REDUCED to minimize train-val gap)
     USE_MIXUP = True
-    MIXUP_ALPHA = 0.4
+    MIXUP_ALPHA = 0.2  # Reduced from 0.4 - less aggressive mixing
     USE_CUTMIX = True
     CUTMIX_ALPHA = 1.0
     USE_AUTOAUGMENT = True
+    MIXUP_CUTMIX_PROB = 0.3  # Reduced from 0.5 to 0.3 - less frequent mixing (30% chance)
     
     # Class-aware augmentation (for rare classes)
     USE_CLASS_AWARE_AUG = True  # Enable stronger augmentation for rare classes
@@ -87,11 +88,11 @@ class Config:
     
     # Label smoothing (reduces overfitting)
     USE_LABEL_SMOOTHING = True
-    LABEL_SMOOTHING = 0.1  # 0.1 is standard, can try 0.05-0.15
+    LABEL_SMOOTHING = 0.15  # Increased from 0.1 for stronger regularization
     
     # Early stopping
-    EARLY_STOPPING_PATIENCE = 15  # Increased from 10 for more patience
-    EARLY_STOPPING_MIN_DELTA = 0.0005  # More sensitive to improvements
+    EARLY_STOPPING_PATIENCE = 10  # Reduced from 15 - stop earlier if not improving
+    EARLY_STOPPING_MIN_DELTA = 0.001  # Increased from 0.0005 - require meaningful improvement
     
     # Create output directories
     OUTPUT_DIR.mkdir(exist_ok=True)

@@ -121,152 +121,123 @@ def get_train_transforms(img_size=384, is_rare_class=False):
     Returns:
         Albumentations Compose object
     """
-    # Base augmentation (same for all classes)
+    # Base augmentation (same for all classes) - MODERATE augmentation
     base_transforms = [
         # Smart resizing - preserve aspect ratio better
         A.LongestMaxSize(max_size=img_size, interpolation=1, p=1.0),
         A.PadIfNeeded(min_height=img_size, min_width=img_size, 
                      border_mode=0, value=0, mask_value=0, p=1.0),
         
-        # Geometric transforms
+        # Geometric transforms (moderate)
         A.HorizontalFlip(p=0.5),
         A.VerticalFlip(p=0.5),
         A.RandomRotate90(p=0.5),
     ]
     
-    # Standard augmentation parameters
+    # Standard augmentation parameters (REDUCED to reduce train-val gap)
     shift_scale_rotate = A.ShiftScaleRotate(
-        shift_limit=0.15,
-        scale_limit=0.15,
-        rotate_limit=30,
+        shift_limit=0.1,   # Reduced from 0.12
+        scale_limit=0.1,   # Reduced from 0.12
+        rotate_limit=20,   # Reduced from 25
         border_mode=0,
-        p=0.7
+        p=0.5  # Reduced from 0.6
     )
     
-    # Medical image specific transforms
+    # Medical image specific transforms (REDUCED - only one, less aggressive)
     medical_transforms = [
         A.ElasticTransform(
-            alpha=120,
-            sigma=120 * 0.05,
-            alpha_affine=120 * 0.03,
-            p=0.3
+            alpha=100,  # Reduced from 120
+            sigma=100 * 0.05,
+            alpha_affine=100 * 0.03,
+            p=0.2  # Reduced from 0.3
         ),
-        A.GridDistortion(
-            num_steps=5,
-            distort_limit=0.3,
-            p=0.3
-        ),
-        A.OpticalDistortion(
-            distort_limit=0.2,
-            shift_limit=0.05,
-            p=0.3
-        ),
+        # Removed GridDistortion and OpticalDistortion for normal classes
     ]
     
-    # Color and brightness transforms
+    # Color and brightness transforms (REDUCED)
     color_transforms = [
         A.RandomBrightnessContrast(
-            brightness_limit=0.3,
-            contrast_limit=0.3,
-            p=0.7
+            brightness_limit=0.2,  # Reduced from 0.3
+            contrast_limit=0.2,    # Reduced from 0.3
+            p=0.5  # Reduced from 0.7
         ),
         A.HueSaturationValue(
-            hue_shift_limit=20,
-            sat_shift_limit=30,
-            val_shift_limit=20,
-            p=0.5
+            hue_shift_limit=15,  # Reduced from 20
+            sat_shift_limit=20,  # Reduced from 30
+            val_shift_limit=15,  # Reduced from 20
+            p=0.4  # Reduced from 0.5
         ),
-        A.CLAHE(clip_limit=3.0, tile_grid_size=(8, 8), p=0.5),
+        A.CLAHE(clip_limit=2.5, tile_grid_size=(8, 8), p=0.4),  # Reduced from 3.0, p=0.5
     ]
     
-    # Noise and blur (light)
+    # Noise and blur (MINIMAL - reduced)
     noise_blur = [
-        A.GaussNoise(var_limit=(5.0, 25.0), p=0.3),
-        A.GaussianBlur(blur_limit=(3, 5), p=0.2),
+        A.GaussNoise(var_limit=(3.0, 15.0), p=0.2),  # Reduced noise and probability
+        A.GaussianBlur(blur_limit=(3, 5), p=0.15),  # Reduced probability
     ]
     
-    # Dropout and cutout
+    # Dropout (REDUCED - single dropout, less aggressive)
     dropout_transforms = [
         A.CoarseDropout(
-            max_holes=12,
-            max_height=48,
-            max_width=48,
-            min_holes=4,
-            p=0.4
+            max_holes=8,   # Reduced from 12
+            max_height=32, # Reduced from 48
+            max_width=32,  # Reduced from 48
+            min_holes=2,   # Reduced from 4
+            p=0.3  # Reduced from 0.4
         ),
-        # Additional dropout for regularization (using CoarseDropout instead of Cutout)
-        A.CoarseDropout(
-            max_holes=8,
-            max_height=32,
-            max_width=32,
-            min_holes=2,
-            p=0.3
-        ),
+        # Removed second dropout for normal classes
     ]
     
-    # Stronger augmentation for rare classes
+    # Moderate augmentation for rare classes (still stronger than normal, but not excessive)
     if is_rare_class:
-        # More aggressive geometric transforms
+        # Slightly more aggressive geometric transforms for rare classes
         shift_scale_rotate = A.ShiftScaleRotate(
-            shift_limit=0.2,  # Increased from 0.15
-            scale_limit=0.2,  # Increased from 0.15
-            rotate_limit=45,  # Increased from 30
+            shift_limit=0.15,  # Moderate increase from normal (0.1)
+            scale_limit=0.15,  # Moderate increase
+            rotate_limit=30,    # Moderate increase from normal (20)
             border_mode=0,
-            p=0.9  # Increased probability
+            p=0.7  # Moderate increase from normal (0.5)
         )
         
-        # More aggressive medical transforms
+        # Moderate medical transforms for rare classes
         medical_transforms = [
             A.ElasticTransform(
-                alpha=150,  # Increased
-                sigma=150 * 0.05,
-                alpha_affine=150 * 0.03,
-                p=0.5  # Increased probability
+                alpha=120,  # Moderate increase from normal (100)
+                sigma=120 * 0.05,
+                alpha_affine=120 * 0.03,
+                p=0.3  # Moderate increase from normal (0.2)
             ),
             A.GridDistortion(
                 num_steps=5,
-                distort_limit=0.4,  # Increased
-                p=0.5  # Increased probability
-            ),
-            A.OpticalDistortion(
-                distort_limit=0.3,  # Increased
-                shift_limit=0.1,  # Increased
-                p=0.5  # Increased probability
+                distort_limit=0.25,  # Moderate
+                p=0.3  # Moderate
             ),
         ]
         
-        # More aggressive color transforms
+        # Moderate color transforms for rare classes
         color_transforms = [
             A.RandomBrightnessContrast(
-                brightness_limit=0.4,  # Increased
-                contrast_limit=0.4,  # Increased
-                p=0.8  # Increased probability
+                brightness_limit=0.25,  # Moderate increase from normal (0.2)
+                contrast_limit=0.25,     # Moderate increase
+                p=0.6  # Moderate increase from normal (0.5)
             ),
             A.HueSaturationValue(
-                hue_shift_limit=30,  # Increased
-                sat_shift_limit=40,  # Increased
-                val_shift_limit=30,  # Increased
-                p=0.7  # Increased probability
+                hue_shift_limit=20,  # Moderate increase from normal (15)
+                sat_shift_limit=25,  # Moderate increase from normal (20)
+                val_shift_limit=20,  # Moderate increase from normal (15)
+                p=0.5  # Moderate increase from normal (0.4)
             ),
-            A.CLAHE(clip_limit=4.0, tile_grid_size=(8, 8), p=0.7),  # Increased
+            A.CLAHE(clip_limit=3.0, tile_grid_size=(8, 8), p=0.5),  # Moderate increase
         ]
         
-        # More aggressive dropout
+        # Moderate dropout for rare classes
         dropout_transforms = [
             A.CoarseDropout(
-                max_holes=16,  # Increased
-                max_height=64,  # Increased
-                max_width=64,  # Increased
-                min_holes=6,  # Increased
-                p=0.6  # Increased probability
-            ),
-            # Additional dropout for rare classes (using CoarseDropout instead of Cutout)
-            A.CoarseDropout(
-                max_holes=12,  # Increased
-                max_height=48,  # Increased
-                max_width=48,  # Increased
-                min_holes=3,  # Increased
-                p=0.5  # Increased probability
+                max_holes=10,   # Moderate increase from normal (8)
+                max_height=40, # Moderate increase from normal (32)
+                max_width=40,  # Moderate increase
+                min_holes=3,   # Moderate increase from normal (2)
+                p=0.4  # Moderate increase from normal (0.3)
             ),
         ]
     
