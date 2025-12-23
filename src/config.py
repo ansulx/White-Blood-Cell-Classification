@@ -32,7 +32,7 @@ class Config:
     # Training settings
     BATCH_SIZE = 128  # Optimized for H200 (141GB memory) - was 32
     NUM_EPOCHS = 50
-    LEARNING_RATE = 5e-5  # Reduced from 1e-4 - validation loss too high, need slower learning
+    LEARNING_RATE = 3e-5  # Further reduced from 5e-5 - validation loss still too high (5.4)
     WEIGHT_DECAY = 5e-4  # Reduced from 1e-3 - too strong regularization causing underfitting
     NUM_WORKERS = 8  # Increased for faster data loading (was 4)
     PIN_MEMORY = True
@@ -43,7 +43,7 @@ class Config:
     
     # Learning rate scheduling
     USE_WARMUP = True  # Warmup for better convergence
-    WARMUP_EPOCHS = 3  # Reduced from 5 - faster warmup, more training time
+    WARMUP_EPOCHS = 5  # Increased from 3 - slower warmup for better validation learning
     USE_GRADIENT_CLIPPING = True  # Prevent gradient explosion
     GRADIENT_CLIP_VALUE = 1.0  # Clip gradients at this value
     

@@ -201,8 +201,8 @@ def validate(model, dataloader, criterion, device, class_names=None, use_amp=Fal
             labels = labels.to(device, non_blocking=True)
             
             with autocast(enabled=use_amp):
-                outputs = model(images)
-                loss = criterion(outputs, labels)
+            outputs = model(images)
+            loss = criterion(outputs, labels)
             
             # Get probabilities for debugging
             probs = torch.softmax(outputs, dim=1)
@@ -228,6 +228,20 @@ def validate(model, dataloader, criterion, device, class_names=None, use_amp=Fal
     # Debug: Check if model is predicting same class always
     unique_preds = len(np.unique(all_preds))
     print(f"  Validation Debug - Unique predicted classes: {unique_preds}/13")
+    
+    # Debug: Per-class accuracy to identify which classes are failing
+    if class_names:
+        from collections import Counter
+        pred_counter = Counter(all_preds)
+        label_counter = Counter(all_labels)
+        print(f"  Validation Debug - Prediction distribution:")
+        for i, cls_name in enumerate(class_names):
+            pred_count = pred_counter.get(i, 0)
+            label_count = label_counter.get(i, 0)
+            if label_count > 0:
+                correct = sum(1 for p, l in zip(all_preds, all_labels) if p == i and l == i)
+                acc = 100 * correct / label_count if label_count > 0 else 0
+                print(f"    {cls_name}: {correct}/{label_count} correct ({acc:.1f}%) | Predicted: {pred_count} times")
     
     # Compute competition metrics
     metrics = compute_all_metrics(
@@ -619,13 +633,13 @@ def train_fold(fold, train_df, val_df, config):
         ).to(config.DEVICE)
     else:
         # Other models (EfficientNet, etc.)
-        model = get_model(
-            model_name=config.MODEL_NAME,
-            num_classes=train_dataset.num_classes,
+    model = get_model(
+        model_name=config.MODEL_NAME,
+        num_classes=train_dataset.num_classes,
             pretrained=config.PRETRAINED,
             drop_rate=0.3,  # Reduced from 0.4
             drop_path_rate=0.2  # Reduced from 0.3
-        ).to(config.DEVICE)
+    ).to(config.DEVICE)
     
     # Compile model for faster training (PyTorch 2.0+)
     if config.USE_TORCH_COMPILE and hasattr(torch, 'compile'):
@@ -642,16 +656,23 @@ def train_fold(fold, train_df, val_df, config):
     label_smoothing = config.LABEL_SMOOTHING if config.USE_LABEL_SMOOTHING else 0.0
     
     # Use weighted loss with label smoothing for better rare class handling
+    # CRITICAL FIX: Cap extreme class weights to prevent instability
     if config.USE_CLASS_WEIGHTS:
         class_weights_list = [class_weights[cls] for cls in train_dataset.unique_classes]
         # Convert to tensor and normalize
         class_weights_tensor = torch.FloatTensor(class_weights_list).to(config.DEVICE)
         class_weights_tensor = class_weights_tensor / class_weights_tensor.mean()  # Normalize
         
+        # CRITICAL: Cap weights to max 3x to prevent extreme values causing validation issues
+        max_weight = 3.0
+        class_weights_tensor = torch.clamp(class_weights_tensor, min=0.1, max=max_weight)
+        # Renormalize after clamping
+        class_weights_tensor = class_weights_tensor / class_weights_tensor.mean()
+        
         print(f"\nLoss Configuration:")
-        print(f"  Using weighted CrossEntropyLoss")
+        print(f"  Using weighted CrossEntropyLoss (weights capped at {max_weight}x)")
         print(f"  Label smoothing: {label_smoothing}")
-        print(f"  Class weights (normalized): {class_weights_tensor.cpu().numpy()}")
+        print(f"  Class weights (normalized & capped): {class_weights_tensor.cpu().numpy()}")
         
         criterion = get_loss_fn(
             'ce', 
