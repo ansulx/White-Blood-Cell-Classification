@@ -25,20 +25,30 @@ class Config:
     LOG_DIR = OUTPUT_DIR / 'logs'
     
     # Model settings
-    MODEL_NAME = 'efficientnet_b4'  # Options: efficientnet_b0-b7, convnext_base, resnet50
+    MODEL_NAME = 'efficientnet_b5'  # Upgraded from B4 to B5 for better accuracy
     PRETRAINED = True
     NUM_CLASSES = 13  # Will be updated based on actual classes
     
     # Training settings
-    BATCH_SIZE = 32
+    BATCH_SIZE = 128  # Optimized for H200 (141GB memory) - was 32
     NUM_EPOCHS = 50
-    LEARNING_RATE = 1e-4
-    WEIGHT_DECAY = 1e-4
-    NUM_WORKERS = 4
+    LEARNING_RATE = 5e-5  # Reduced from 1e-4 for better convergence
+    WEIGHT_DECAY = 5e-4  # Increased from 1e-4 for better regularization
+    NUM_WORKERS = 8  # Increased for faster data loading (was 4)
     PIN_MEMORY = True
     
+    # GPU Optimization
+    USE_MIXED_PRECISION = True  # Automatic Mixed Precision (AMP) - 2x speedup
+    USE_TORCH_COMPILE = True  # PyTorch 2.0+ compilation - 20-30% speedup
+    
+    # Learning rate scheduling
+    USE_WARMUP = True  # Warmup for better convergence
+    WARMUP_EPOCHS = 5  # Number of warmup epochs
+    USE_GRADIENT_CLIPPING = True  # Prevent gradient explosion
+    GRADIENT_CLIP_VALUE = 1.0  # Clip gradients at this value
+    
     # Image settings
-    IMG_SIZE = 384  # Will use 384x384 for EfficientNet-B4
+    IMG_SIZE = 448  # Increased from 384 for better accuracy (use 512 if memory allows)
     MEAN = [0.485, 0.456, 0.406]  # ImageNet normalization
     STD = [0.229, 0.224, 0.225]
     
@@ -48,6 +58,10 @@ class Config:
     USE_CUTMIX = True
     CUTMIX_ALPHA = 1.0
     USE_AUTOAUGMENT = True
+    
+    # Class-aware augmentation (for rare classes)
+    USE_CLASS_AWARE_AUG = True  # Enable stronger augmentation for rare classes
+    RARE_CLASS_THRESHOLD = 0.1  # Classes with <10% of median samples are considered rare
     
     # Validation
     VAL_SPLIT = 0.2
@@ -71,13 +85,19 @@ class Config:
     # Class weights (for handling imbalance)
     USE_CLASS_WEIGHTS = True
     
+    # Label smoothing (reduces overfitting)
+    USE_LABEL_SMOOTHING = True
+    LABEL_SMOOTHING = 0.1  # 0.1 is standard, can try 0.05-0.15
+    
     # Early stopping
-    EARLY_STOPPING_PATIENCE = 10
-    EARLY_STOPPING_MIN_DELTA = 0.001
+    EARLY_STOPPING_PATIENCE = 15  # Increased from 10 for more patience
+    EARLY_STOPPING_MIN_DELTA = 0.0005  # More sensitive to improvements
     
     # Create output directories
     OUTPUT_DIR.mkdir(exist_ok=True)
     MODEL_DIR.mkdir(exist_ok=True)
     PRED_DIR.mkdir(exist_ok=True)
     LOG_DIR.mkdir(exist_ok=True)
+    (LOG_DIR / 'metrics').mkdir(exist_ok=True)
+    (LOG_DIR / 'plots').mkdir(exist_ok=True)
 

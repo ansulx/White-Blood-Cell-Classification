@@ -37,7 +37,7 @@ class FocalLoss(nn.Module):
             return focal_loss
 
 
-def get_loss_fn(loss_type='ce', class_weights=None, device='cuda'):
+def get_loss_fn(loss_type='ce', class_weights=None, device='cuda', label_smoothing=0.0):
     """
     Get loss function based on type.
     
@@ -45,6 +45,7 @@ def get_loss_fn(loss_type='ce', class_weights=None, device='cuda'):
         loss_type: Type of loss ('ce', 'focal', 'label_smoothing')
         class_weights: Class weights for weighted loss (list or tensor)
         device: Device to put weights on
+        label_smoothing: Label smoothing factor (0.0 to 1.0)
     
     Returns:
         Loss function instance
@@ -54,14 +55,23 @@ def get_loss_fn(loss_type='ce', class_weights=None, device='cuda'):
             if not isinstance(class_weights, torch.Tensor):
                 class_weights = torch.FloatTensor(class_weights)
             class_weights = class_weights.to(device)
-            return nn.CrossEntropyLoss(weight=class_weights)
-        return nn.CrossEntropyLoss()
+            return nn.CrossEntropyLoss(weight=class_weights, label_smoothing=label_smoothing)
+        return nn.CrossEntropyLoss(label_smoothing=label_smoothing)
     
     elif loss_type == 'focal':
+        # Focal loss with label smoothing support
+        if label_smoothing > 0:
+            return nn.CrossEntropyLoss(label_smoothing=label_smoothing)
         return FocalLoss(alpha=1, gamma=2)
     
     elif loss_type == 'label_smoothing':
-        return nn.CrossEntropyLoss(label_smoothing=0.1)
+        smoothing = label_smoothing if label_smoothing > 0 else 0.1
+        if class_weights is not None:
+            if not isinstance(class_weights, torch.Tensor):
+                class_weights = torch.FloatTensor(class_weights)
+            class_weights = class_weights.to(device)
+            return nn.CrossEntropyLoss(weight=class_weights, label_smoothing=smoothing)
+        return nn.CrossEntropyLoss(label_smoothing=smoothing)
     
     else:
         raise ValueError(f"Unknown loss type: {loss_type}. Choose from: 'ce', 'focal', 'label_smoothing'")

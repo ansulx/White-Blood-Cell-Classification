@@ -34,8 +34,12 @@ def load_model(model_path, device='cuda'):
     
     # Infer model name from path
     model_name = Config.MODEL_NAME
-    if 'efficientnet' in str(model_path):
+    if 'efficientnet_b5' in str(model_path):
+        model_name = 'efficientnet_b5'
+    elif 'efficientnet_b4' in str(model_path):
         model_name = 'efficientnet_b4'
+    elif 'efficientnet' in str(model_path):
+        model_name = 'efficientnet_b4'  # Default fallback
     elif 'convnext' in str(model_path):
         model_name = 'convnext_base'
     

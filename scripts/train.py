@@ -4,9 +4,11 @@ Training script for WBC-Bench-2026 competition
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
+from torch.cuda.amp import autocast, GradScaler
 from torch.utils.data import DataLoader, WeightedRandomSampler
-from torch.optim.lr_scheduler import CosineAnnealingLR, ReduceLROnPlateau
+from torch.optim.lr_scheduler import CosineAnnealingLR, ReduceLROnPlateau, LambdaLR
 import pandas as pd
 import numpy as np
 from pathlib import Path
@@ -16,6 +18,9 @@ import warnings
 warnings.filterwarnings('ignore')
 from PIL import Image
 import albumentations as A
+import matplotlib.pyplot as plt
+import json
+from datetime import datetime
 
 import sys
 from pathlib import Path
@@ -27,6 +32,7 @@ sys.path.insert(0, str(project_root))
 from src.config import Config
 from src.data import WBCDataset, get_train_transforms, get_val_transforms
 from src.models import get_model, get_loss_fn
+from src.metrics import compute_all_metrics, print_classification_report
 from sklearn.model_selection import StratifiedKFold
 from sklearn.utils.class_weight import compute_class_weight
 
@@ -40,8 +46,66 @@ def compute_class_weights(labels):
     )
     return dict(zip(unique_labels, class_weights))
 
-def train_epoch(model, dataloader, criterion, optimizer, device, scheduler=None):
-    """Train for one epoch"""
+def mixup_data(x, y, alpha=1.0):
+    """Apply mixup augmentation"""
+    if alpha > 0:
+        lam = np.random.beta(alpha, alpha)
+    else:
+        lam = 1
+    
+    batch_size = x.size(0)
+    index = torch.randperm(batch_size).to(x.device)
+    
+    mixed_x = lam * x + (1 - lam) * x[index, :]
+    y_a, y_b = y, y[index]
+    return mixed_x, y_a, y_b, lam
+
+def cutmix_data(x, y, alpha=1.0):
+    """Apply cutmix augmentation"""
+    if alpha > 0:
+        lam = np.random.beta(alpha, alpha)
+    else:
+        lam = 1
+    
+    batch_size = x.size(0)
+    index = torch.randperm(batch_size).to(x.device)
+    
+    y_a, y_b = y, y[index]
+    
+    bbx1, bby1, bbx2, bby2 = rand_bbox(x.size(), lam)
+    x[:, :, bbx1:bbx2, bby1:bby2] = x[index, :, bbx1:bbx2, bby1:bby2]
+    
+    # Adjust lambda to match pixel ratio
+    lam = 1 - ((bbx2 - bbx1) * (bby2 - bby1) / (x.size()[-1] * x.size()[-2]))
+    
+    return x, y_a, y_b, lam
+
+def rand_bbox(size, lam):
+    """Generate random bounding box for CutMix"""
+    W = size[2]
+    H = size[3]
+    cut_rat = np.sqrt(1. - lam)
+    cut_w = np.int(W * cut_rat)
+    cut_h = np.int(H * cut_rat)
+    
+    cx = np.random.randint(W)
+    cy = np.random.randint(H)
+    
+    bbx1 = np.clip(cx - cut_w // 2, 0, W)
+    bby1 = np.clip(cy - cut_h // 2, 0, H)
+    bbx2 = np.clip(cx + cut_w // 2, 0, W)
+    bby2 = np.clip(cy + cut_h // 2, 0, H)
+    
+    return bbx1, bby1, bbx2, bby2
+
+def mixup_criterion(criterion, pred, y_a, y_b, lam):
+    """Compute loss for mixup"""
+    return lam * criterion(pred, y_a) + (1 - lam) * criterion(pred, y_b)
+
+def train_epoch(model, dataloader, criterion, optimizer, device, scheduler=None, 
+                gradient_clip_value=None, use_mixup=False, mixup_alpha=0.4,
+                use_cutmix=False, cutmix_alpha=1.0, use_amp=False, scaler=None):
+    """Train for one epoch with mixed precision support"""
     model.train()
     running_loss = 0.0
     correct = 0
@@ -49,17 +113,38 @@ def train_epoch(model, dataloader, criterion, optimizer, device, scheduler=None)
     
     pbar = tqdm(dataloader, desc='Training')
     for images, labels, _ in pbar:
-        images = images.to(device)
-        labels = labels.to(device)
+        images = images.to(device, non_blocking=True)  # Non-blocking transfer
+        labels = labels.to(device, non_blocking=True)
         
+        # Mixed precision training
+        with autocast(enabled=use_amp):
+            # Apply Mixup or CutMix
+            if use_cutmix and np.random.rand() < 0.5:
+                images, y_a, y_b, lam = cutmix_data(images, labels, cutmix_alpha)
+                outputs = model(images)
+                loss = mixup_criterion(criterion, outputs, y_a, y_b, lam)
+            elif use_mixup and np.random.rand() < 0.5:
+                images, y_a, y_b, lam = mixup_data(images, labels, mixup_alpha)
+                outputs = model(images)
+                loss = mixup_criterion(criterion, outputs, y_a, y_b, lam)
+            else:
+                outputs = model(images)
+                loss = criterion(outputs, labels)
+        
+        # Backward pass with mixed precision
         optimizer.zero_grad()
-        outputs = model(images)
-        loss = criterion(outputs, labels)
-        loss.backward()
-        optimizer.step()
-        
-        if scheduler and isinstance(scheduler, CosineAnnealingLR):
-            scheduler.step()
+        if use_amp and scaler is not None:
+            scaler.scale(loss).backward()
+            if gradient_clip_value is not None:
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), gradient_clip_value)
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            loss.backward()
+            if gradient_clip_value is not None:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), gradient_clip_value)
+            optimizer.step()
         
         running_loss += loss.item()
         _, predicted = torch.max(outputs.data, 1)
@@ -75,8 +160,8 @@ def train_epoch(model, dataloader, criterion, optimizer, device, scheduler=None)
     epoch_acc = 100 * correct / total
     return epoch_loss, epoch_acc
 
-def validate(model, dataloader, criterion, device):
-    """Validate model"""
+def validate(model, dataloader, criterion, device, class_names=None):
+    """Validate model and compute competition metrics"""
     model.eval()
     running_loss = 0.0
     correct = 0
@@ -86,11 +171,12 @@ def validate(model, dataloader, criterion, device):
     
     with torch.no_grad():
         for images, labels, _ in tqdm(dataloader, desc='Validating'):
-            images = images.to(device)
-            labels = labels.to(device)
+            images = images.to(device, non_blocking=True)
+            labels = labels.to(device, non_blocking=True)
             
-            outputs = model(images)
-            loss = criterion(outputs, labels)
+            with autocast(enabled=class_names is not None):  # Use AMP if available
+                outputs = model(images)
+                loss = criterion(outputs, labels)
             
             running_loss += loss.item()
             _, predicted = torch.max(outputs.data, 1)
@@ -102,7 +188,158 @@ def validate(model, dataloader, criterion, device):
     
     epoch_loss = running_loss / len(dataloader)
     epoch_acc = 100 * correct / total
-    return epoch_loss, epoch_acc, all_preds, all_labels
+    
+    # Compute competition metrics
+    metrics = compute_all_metrics(
+        np.array(all_labels), 
+        np.array(all_preds),
+        class_names=class_names
+    )
+    
+    return epoch_loss, epoch_acc, all_preds, all_labels, metrics
+
+def save_training_results(fold, history, config, best_val_macro_f1, best_val_metrics=None):
+    """Save training history, plots, and metrics"""
+    
+    # Create directories
+    plots_dir = config.LOG_DIR / 'plots'
+    plots_dir.mkdir(exist_ok=True)
+    metrics_dir = config.LOG_DIR / 'metrics'
+    metrics_dir.mkdir(exist_ok=True)
+    
+    # Save metrics to CSV
+    metrics_df = pd.DataFrame(history)
+    metrics_path = metrics_dir / f'{config.MODEL_NAME}_fold{fold}_metrics.csv'
+    metrics_df.to_csv(metrics_path, index=False)
+    print(f"Saved metrics to {metrics_path}")
+    
+    # Save summary JSON
+    best_epoch_idx = np.argmax(history['val_macro_f1']) if history['val_macro_f1'] else -1
+    summary = {
+        'fold': fold,
+        'model_name': config.MODEL_NAME,
+        'best_val_macro_f1': best_val_macro_f1,  # Primary competition metric
+        'best_val_acc': history['val_acc'][best_epoch_idx] if best_epoch_idx >= 0 and history['val_acc'] else None,
+        'total_epochs': len(history['epoch']),
+        'final_train_loss': history['train_loss'][-1] if history['train_loss'] else None,
+        'final_train_acc': history['train_acc'][-1] if history['train_acc'] else None,
+        'final_val_loss': history['val_loss'][-1] if history['val_loss'] else None,
+        'final_val_acc': history['val_acc'][-1] if history['val_acc'] else None,
+        'final_val_macro_f1': history['val_macro_f1'][-1] if history['val_macro_f1'] else None,
+        'best_epoch': history['epoch'][best_epoch_idx] if best_epoch_idx >= 0 else None,
+        'config': {
+            'batch_size': config.BATCH_SIZE,
+            'learning_rate': config.LEARNING_RATE,
+            'weight_decay': config.WEIGHT_DECAY,
+            'img_size': config.IMG_SIZE,
+            'num_epochs': config.NUM_EPOCHS,
+            'label_smoothing': config.LABEL_SMOOTHING if config.USE_LABEL_SMOOTHING else 0.0,
+            'use_mixup': config.USE_MIXUP,
+            'use_cutmix': config.USE_CUTMIX,
+        }
+    }
+    
+    summary_path = metrics_dir / f'{config.MODEL_NAME}_fold{fold}_summary.json'
+    with open(summary_path, 'w') as f:
+        json.dump(summary, f, indent=2)
+    print(f"Saved summary to {summary_path}")
+    
+    # Create plots
+    epochs = history['epoch']
+    
+    # Get best epoch info for display
+    best_epoch_idx = np.argmax(history['val_macro_f1']) if history['val_macro_f1'] else -1
+    best_val_acc_display = history['val_acc'][best_epoch_idx] if best_epoch_idx >= 0 and history['val_acc'] else 0.0
+    
+    # 1. Loss curves
+    plt.figure(figsize=(12, 5))
+    plt.subplot(1, 2, 1)
+    plt.plot(epochs, history['train_loss'], label='Train Loss', marker='o', linewidth=2)
+    plt.plot(epochs, history['val_loss'], label='Val Loss', marker='s', linewidth=2)
+    plt.xlabel('Epoch', fontsize=12)
+    plt.ylabel('Loss', fontsize=12)
+    plt.title(f'Loss Curves - Fold {fold}\nBest Macro-F1: {best_val_macro_f1:.4f}', fontsize=14)
+    plt.legend(fontsize=10)
+    plt.grid(True, alpha=0.3)
+    
+    # 2. Accuracy curves
+    plt.subplot(1, 2, 2)
+    plt.plot(epochs, history['train_acc'], label='Train Acc', marker='o', linewidth=2)
+    plt.plot(epochs, history['val_acc'], label='Val Acc', marker='s', linewidth=2)
+    plt.xlabel('Epoch', fontsize=12)
+    plt.ylabel('Accuracy (%)', fontsize=12)
+    plt.title(f'Accuracy Curves - Fold {fold}\nBest Val Acc: {best_val_acc_display:.2f}%', fontsize=14)
+    plt.legend(fontsize=10)
+    plt.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    plot_path = plots_dir / f'{config.MODEL_NAME}_fold{fold}_curves.png'
+    plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+    plt.close()
+    print(f"Saved plots to {plot_path}")
+    
+    # 3. Learning rate curve
+    plt.figure(figsize=(10, 5))
+    plt.plot(epochs, history['learning_rate'], label='Learning Rate', marker='o', linewidth=2, color='green')
+    plt.xlabel('Epoch', fontsize=12)
+    plt.ylabel('Learning Rate', fontsize=12)
+    plt.title(f'Learning Rate Schedule - Fold {fold}', fontsize=14)
+    plt.legend(fontsize=10)
+    plt.grid(True, alpha=0.3)
+    plt.yscale('log')
+    
+    lr_plot_path = plots_dir / f'{config.MODEL_NAME}_fold{fold}_lr.png'
+    plt.savefig(lr_plot_path, dpi=300, bbox_inches='tight')
+    plt.close()
+    print(f"Saved LR plot to {lr_plot_path}")
+    
+    # 4. Combined plot (all metrics)
+    fig, axes = plt.subplots(2, 2, figsize=(15, 12))
+    
+    # Loss
+    axes[0, 0].plot(epochs, history['train_loss'], label='Train', marker='o', linewidth=2)
+    axes[0, 0].plot(epochs, history['val_loss'], label='Val', marker='s', linewidth=2)
+    axes[0, 0].set_xlabel('Epoch')
+    axes[0, 0].set_ylabel('Loss')
+    axes[0, 0].set_title('Loss Curves')
+    axes[0, 0].legend()
+    axes[0, 0].grid(True, alpha=0.3)
+    
+    # Accuracy
+    axes[0, 1].plot(epochs, history['train_acc'], label='Train', marker='o', linewidth=2)
+    axes[0, 1].plot(epochs, history['val_acc'], label='Val', marker='s', linewidth=2)
+    axes[0, 1].set_xlabel('Epoch')
+    axes[0, 1].set_ylabel('Accuracy (%)')
+    axes[0, 1].set_title('Accuracy Curves')
+    axes[0, 1].legend()
+    axes[0, 1].grid(True, alpha=0.3)
+    
+    # Learning Rate
+    axes[1, 0].plot(epochs, history['learning_rate'], marker='o', linewidth=2, color='green')
+    axes[1, 0].set_xlabel('Epoch')
+    axes[1, 0].set_ylabel('Learning Rate')
+    axes[1, 0].set_title('Learning Rate Schedule')
+    axes[1, 0].set_yscale('log')
+    axes[1, 0].grid(True, alpha=0.3)
+    
+    # Overfitting gap (train acc - val acc)
+    if len(history['train_acc']) == len(history['val_acc']):
+        gap = [t - v for t, v in zip(history['train_acc'], history['val_acc'])]
+        axes[1, 1].plot(epochs, gap, marker='o', linewidth=2, color='red')
+        axes[1, 1].axhline(y=0, color='black', linestyle='--', alpha=0.5)
+        axes[1, 1].set_xlabel('Epoch')
+        axes[1, 1].set_ylabel('Train Acc - Val Acc (%)')
+        axes[1, 1].set_title('Overfitting Gap (Lower is Better)')
+        axes[1, 1].grid(True, alpha=0.3)
+    
+    plt.suptitle(f'Training Summary - Fold {fold} | Model: {config.MODEL_NAME} | Best Macro-F1: {best_val_macro_f1:.4f}', 
+                 fontsize=16, fontweight='bold')
+    plt.tight_layout()
+    
+    combined_plot_path = plots_dir / f'{config.MODEL_NAME}_fold{fold}_summary.png'
+    plt.savefig(combined_plot_path, dpi=300, bbox_inches='tight')
+    plt.close()
+    print(f"Saved combined plot to {combined_plot_path}")
 
 def train_fold(fold, train_df, val_df, config):
     """Train a single fold"""
@@ -123,12 +360,45 @@ def train_fold(fold, train_df, val_df, config):
         else:
             return config.PHASE2_TRAIN_DIR  # Default
     
+    # Identify rare classes for class-aware augmentation
+    from src.data.dataset import identify_rare_classes
+    
+    if config.USE_CLASS_AWARE_AUG:
+        rare_classes = identify_rare_classes(train_df, threshold=config.RARE_CLASS_THRESHOLD)
+        print(f"\nRare classes identified (threshold={config.RARE_CLASS_THRESHOLD}): {sorted(rare_classes)}")
+        class_counts = train_df['labels'].value_counts()
+        print("Class distribution:")
+        for cls in sorted(class_counts.index):
+            count = class_counts[cls]
+            marker = " [RARE]" if cls in rare_classes else ""
+            print(f"  {cls}: {count} samples{marker}")
+    else:
+        rare_classes = set()
+    
     # Create custom dataset class that handles both directories
     class CombinedDataset(WBCDataset):
-        def __init__(self, df, transform, is_train=True):
+        def __init__(self, df, transform, is_train=True, rare_classes=None, class_aware_aug=False):
+            # Create temporary CSV for parent initialization
+            import tempfile
+            temp_csv = tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False)
+            df.to_csv(temp_csv.name, index=False)
+            temp_csv_path = temp_csv.name
+            temp_csv.close()
+            
+            # Initialize parent class (will be overridden but needed for inheritance)
+            super().__init__(
+                csv_path=temp_csv_path,
+                img_dir=config.PHASE1_DIR,  # Dummy, we use img_paths
+                transform=transform,
+                is_train=is_train,
+                rare_classes=rare_classes,
+                class_aware_aug=class_aware_aug
+            )
+            
+            # Override with actual data
             self.df = df.copy()
-            self.is_train = is_train
-            self.transform = transform
+            self.rare_classes = rare_classes if rare_classes is not None else set()
+            self.class_aware_aug = class_aware_aug
             
             # Determine image directories
             self.img_paths = []
@@ -147,6 +417,12 @@ def train_fold(fold, train_df, val_df, config):
                 self.class_to_idx = {cls: idx for idx, cls in enumerate(self.unique_classes)}
                 self.idx_to_class = {idx: cls for cls, idx in self.class_to_idx.items()}
                 self.num_classes = len(self.unique_classes)
+            
+            # Clean up temp file
+            try:
+                os.unlink(temp_csv_path)
+            except:
+                pass
         
         def __len__(self):
             return len(self.df)
@@ -159,12 +435,28 @@ def train_fold(fold, train_df, val_df, config):
             image = Image.open(img_path).convert('RGB')
             image = np.array(image)
             
+            # Apply transforms with class-aware augmentation
             if self.transform:
-                if isinstance(self.transform, A.Compose):
-                    transformed = self.transform(image=image)
+                # Class-aware augmentation: use different transform for rare classes
+                if self.class_aware_aug and self.is_train:
+                    label = self.df.iloc[idx]['labels']
+                    is_rare = label in self.rare_classes
+                    
+                    if isinstance(self.transform, dict):
+                        # Transform is a dict with 'normal' and 'rare' keys
+                        transform_to_use = self.transform['rare'] if is_rare else self.transform['normal']
+                    else:
+                        # Single transform - use as is (backward compatibility)
+                        transform_to_use = self.transform
+                else:
+                    # No class-aware augmentation or not training
+                    transform_to_use = self.transform
+                
+                if isinstance(transform_to_use, A.Compose):
+                    transformed = transform_to_use(image=image)
                     image = transformed['image']
                 else:
-                    image = self.transform(image)
+                    image = transform_to_use(image)
             
             if self.is_train:
                 label = self.df.iloc[idx]['labels']
@@ -173,9 +465,31 @@ def train_fold(fold, train_df, val_df, config):
             else:
                 return image, img_name
     
+    # Create augmentation transforms
+    if config.USE_CLASS_AWARE_AUG:
+        # Create separate transforms for normal and rare classes
+        normal_transform = get_train_transforms(config.IMG_SIZE, is_rare_class=False)
+        rare_transform = get_train_transforms(config.IMG_SIZE, is_rare_class=True)
+        train_transform = {'normal': normal_transform, 'rare': rare_transform}
+    else:
+        # Use standard augmentation for all classes
+        train_transform = get_train_transforms(config.IMG_SIZE, is_rare_class=False)
+    
     # Create datasets
-    train_dataset = CombinedDataset(train_df, get_train_transforms(config.IMG_SIZE), is_train=True)
-    val_dataset = CombinedDataset(val_df, get_val_transforms(config.IMG_SIZE), is_train=True)
+    train_dataset = CombinedDataset(
+        train_df, 
+        train_transform, 
+        is_train=True,
+        rare_classes=rare_classes,
+        class_aware_aug=config.USE_CLASS_AWARE_AUG
+    )
+    val_dataset = CombinedDataset(
+        val_df, 
+        get_val_transforms(config.IMG_SIZE), 
+        is_train=True,
+        rare_classes=set(),  # No class-aware aug for validation
+        class_aware_aug=False
+    )
     
     # Compute class weights
     if config.USE_CLASS_WEIGHTS:
@@ -213,12 +527,34 @@ def train_fold(fold, train_df, val_df, config):
         pretrained=config.PRETRAINED
     ).to(config.DEVICE)
     
+    # Compile model for faster training (PyTorch 2.0+)
+    if config.USE_TORCH_COMPILE and hasattr(torch, 'compile'):
+        try:
+            model = torch.compile(model, mode='reduce-overhead')
+            print("Model compiled with torch.compile for faster training")
+        except Exception as e:
+            print(f"Warning: torch.compile failed: {e}. Continuing without compilation.")
+    
+    # Mixed precision scaler
+    scaler = GradScaler() if config.USE_MIXED_PRECISION else None
+    
     # Loss and optimizer
+    label_smoothing = config.LABEL_SMOOTHING if config.USE_LABEL_SMOOTHING else 0.0
+    
     if config.USE_CLASS_WEIGHTS:
         class_weights_list = [class_weights[cls] for cls in train_dataset.unique_classes]
-        criterion = get_loss_fn('ce', class_weights=class_weights_list, device=config.DEVICE)
+        criterion = get_loss_fn(
+            'ce', 
+            class_weights=class_weights_list, 
+            device=config.DEVICE,
+            label_smoothing=label_smoothing
+        )
     else:
-        criterion = get_loss_fn('focal', device=config.DEVICE)
+        criterion = get_loss_fn(
+            'focal', 
+            device=config.DEVICE,
+            label_smoothing=label_smoothing
+        )
     
     optimizer = optim.AdamW(
         model.parameters(),
@@ -226,40 +562,103 @@ def train_fold(fold, train_df, val_df, config):
         weight_decay=config.WEIGHT_DECAY
     )
     
-    scheduler = CosineAnnealingLR(optimizer, T_max=config.NUM_EPOCHS)
+    # Learning rate scheduler with warmup
+    if config.USE_WARMUP:
+        # Warmup + Cosine Annealing
+        def lr_lambda(epoch):
+            if epoch < config.WARMUP_EPOCHS:
+                # Linear warmup
+                return (epoch + 1) / config.WARMUP_EPOCHS
+            else:
+                # Cosine annealing after warmup
+                progress = (epoch - config.WARMUP_EPOCHS) / (config.NUM_EPOCHS - config.WARMUP_EPOCHS)
+                return 0.5 * (1 + np.cos(np.pi * progress))
+        
+        scheduler = LambdaLR(optimizer, lr_lambda)
+    else:
+        scheduler = CosineAnnealingLR(optimizer, T_max=config.NUM_EPOCHS)
     
     # Training loop
-    best_val_acc = 0.0
+    best_val_macro_f1 = 0.0  # Track Macro-F1 (primary competition metric)
+    best_val_acc = 0.0  # Also track accuracy for reference
+    best_val_metrics = None
     patience_counter = 0
+    
+    # Track training history
+    history = {
+        'train_loss': [],
+        'train_acc': [],
+        'val_loss': [],
+        'val_acc': [],
+        'val_macro_f1': [],  # Primary competition metric
+        'learning_rate': [],
+        'epoch': []
+    }
     
     for epoch in range(config.NUM_EPOCHS):
         print(f"\nEpoch {epoch+1}/{config.NUM_EPOCHS}")
         
+        # Gradient clipping value
+        grad_clip = config.GRADIENT_CLIP_VALUE if config.USE_GRADIENT_CLIPPING else None
+        
         train_loss, train_acc = train_epoch(
-            model, train_loader, criterion, optimizer, config.DEVICE, scheduler
+            model, train_loader, criterion, optimizer, config.DEVICE, scheduler,
+            gradient_clip_value=grad_clip,
+            use_mixup=config.USE_MIXUP,
+            mixup_alpha=config.MIXUP_ALPHA,
+            use_cutmix=config.USE_CUTMIX,
+            cutmix_alpha=config.CUTMIX_ALPHA,
+            use_amp=config.USE_MIXED_PRECISION,
+            scaler=scaler
         )
         
-        val_loss, val_acc, _, _ = validate(
-            model, val_loader, criterion, config.DEVICE
+        # Get class names for metrics
+        class_names = list(train_dataset.idx_to_class.values())
+        
+        val_loss, val_acc, _, _, val_metrics = validate(
+            model, val_loader, criterion, config.DEVICE, 
+            class_names=class_names, use_amp=config.USE_MIXED_PRECISION
         )
+        
+        # Step scheduler after each epoch
+        if scheduler:
+            scheduler.step()
+        
+        current_lr = optimizer.param_groups[0]['lr']
+        macro_f1 = val_metrics['macro_f1']
         
         print(f"Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.2f}%")
         print(f"Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.2f}%")
+        print(f"Val Macro-F1: {macro_f1:.4f} (Primary Metric)")
+        print(f"Learning Rate: {current_lr:.6f}")
         
-        # Save best model
-        if val_acc > best_val_acc + config.EARLY_STOPPING_MIN_DELTA:
-            best_val_acc = val_acc
+        # Track history
+        history['epoch'].append(epoch + 1)
+        history['train_loss'].append(train_loss)
+        history['train_acc'].append(train_acc)
+        history['val_loss'].append(val_loss)
+        history['val_acc'].append(val_acc)
+        history['val_macro_f1'].append(macro_f1)
+        history['learning_rate'].append(current_lr)
+        
+        # Save best model based on Macro-F1 (primary metric)
+        if macro_f1 > best_val_macro_f1 + config.EARLY_STOPPING_MIN_DELTA:
+            best_val_macro_f1 = macro_f1
+            best_val_acc = val_acc  # Also track accuracy
+            best_val_metrics = val_metrics
             patience_counter = 0
             model_path = config.MODEL_DIR / f'{config.MODEL_NAME}_fold{fold}_best.pth'
             torch.save({
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'val_acc': val_acc,
+                'val_macro_f1': macro_f1,
+                'val_metrics': val_metrics,
                 'epoch': epoch,
                 'class_to_idx': train_dataset.class_to_idx,
                 'idx_to_class': train_dataset.idx_to_class,
             }, model_path)
-            print(f"Saved best model with val_acc: {val_acc:.2f}%")
+            print(f"✓ Saved best model - Val Acc: {val_acc:.2f}%, Macro-F1: {macro_f1:.4f}")
         else:
             patience_counter += 1
         
@@ -268,7 +667,10 @@ def train_fold(fold, train_df, val_df, config):
             print(f"Early stopping at epoch {epoch+1}")
             break
     
-    return best_val_acc
+    # Save training history and plots
+    save_training_results(fold, history, config, best_val_macro_f1, best_val_metrics)
+    
+    return best_val_macro_f1, best_val_metrics
 
 def main():
     """Main training function"""
@@ -301,18 +703,111 @@ def main():
     )
     
     fold_scores = []
+    fold_details = []
+    
     for fold, (train_idx, val_idx) in enumerate(skf.split(all_train, all_train['labels'])):
         train_df = all_train.iloc[train_idx].reset_index(drop=True)
         val_df = all_train.iloc[val_idx].reset_index(drop=True)
         
-        val_acc = train_fold(fold, train_df, val_df, config)
-        fold_scores.append(val_acc)
-        print(f"Fold {fold} Val Acc: {val_acc:.2f}%")
+        val_macro_f1, val_metrics = train_fold(fold, train_df, val_df, config)
+        fold_scores.append(val_macro_f1)
+        fold_details.append({
+            'fold': fold,
+            'val_macro_f1': val_macro_f1,
+            'val_acc': val_metrics.get('accuracy', 0.0) if val_metrics else 0.0,
+            'val_balanced_accuracy': val_metrics.get('balanced_accuracy', 0.0) if val_metrics else 0.0,
+            'val_macro_precision': val_metrics.get('macro_precision', 0.0) if val_metrics else 0.0,
+            'val_macro_specificity': val_metrics.get('macro_specificity', 0.0) if val_metrics else 0.0,
+            'train_samples': len(train_df),
+            'val_samples': len(val_df)
+        })
+        print(f"Fold {fold} - Macro-F1: {val_macro_f1:.4f} (Primary Metric)")
+    
+    # Calculate final statistics
+    mean_acc = np.mean(fold_scores)
+    std_acc = np.std(fold_scores)
+    min_acc = np.min(fold_scores)
+    max_acc = np.max(fold_scores)
     
     print(f"\n{'='*60}")
-    print(f"Cross-Validation Results:")
-    print(f"Mean Val Acc: {np.mean(fold_scores):.2f}% ± {np.std(fold_scores):.2f}%")
+    print(f"Cross-Validation Results (Primary Metric - Macro-F1):")
+    print(f"Mean Macro-F1: {mean_acc:.4f} ± {std_acc:.4f}")
+    print(f"Min Macro-F1: {min_acc:.4f}")
+    print(f"Max Macro-F1: {max_acc:.4f}")
     print(f"{'='*60}")
+    
+    # Calculate tie-breaking metrics
+    mean_balanced_acc = np.mean([f['balanced_accuracy'] for f in fold_details])
+    mean_macro_prec = np.mean([f['macro_precision'] for f in fold_details])
+    mean_macro_spec = np.mean([f['macro_specificity'] for f in fold_details])
+    
+    print(f"\nTie-Breaking Metrics:")
+    print(f"Mean Balanced Accuracy: {mean_balanced_acc:.4f}")
+    print(f"Mean Macro Precision: {mean_macro_prec:.4f}")
+    print(f"Mean Macro Specificity: {mean_macro_spec:.4f}")
+    print(f"{'='*60}")
+    
+    # Save final summary
+    final_summary = {
+        'model_name': config.MODEL_NAME,
+        'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'total_folds': len(fold_scores),
+        'mean_macro_f1': float(mean_acc),  # Primary metric
+        'std_macro_f1': float(std_acc),
+        'min_macro_f1': float(min_acc),
+        'max_macro_f1': float(max_acc),
+        'mean_balanced_accuracy': float(mean_balanced_acc),
+        'mean_macro_precision': float(mean_macro_prec),
+        'mean_macro_specificity': float(mean_macro_spec),
+        'fold_details': fold_details,
+        'config': {
+            'batch_size': config.BATCH_SIZE,
+            'learning_rate': config.LEARNING_RATE,
+            'weight_decay': config.WEIGHT_DECAY,
+            'img_size': config.IMG_SIZE,
+            'num_epochs': config.NUM_EPOCHS,
+            'label_smoothing': config.LABEL_SMOOTHING if config.USE_LABEL_SMOOTHING else 0.0,
+            'use_mixup': config.USE_MIXUP,
+            'use_cutmix': config.USE_CUTMIX,
+            'use_warmup': config.USE_WARMUP,
+            'warmup_epochs': config.WARMUP_EPOCHS,
+            'gradient_clipping': config.USE_GRADIENT_CLIPPING,
+            'early_stopping_patience': config.EARLY_STOPPING_PATIENCE,
+        },
+        'dataset_info': {
+            'total_samples': len(all_train),
+            'num_classes': len(all_train['labels'].unique()),
+            'class_distribution': all_train['labels'].value_counts().to_dict()
+        }
+    }
+    
+    # Save final summary
+    final_summary_path = config.LOG_DIR / 'metrics' / f'{config.MODEL_NAME}_final_summary.json'
+    with open(final_summary_path, 'w') as f:
+        json.dump(final_summary, f, indent=2)
+    print(f"\nSaved final summary to {final_summary_path}")
+    
+    # Create final comparison plot
+    plt.figure(figsize=(12, 6))
+    folds = [f['fold'] for f in fold_details]
+    macro_f1_scores = [f['val_macro_f1'] for f in fold_details]
+    
+    plt.bar(folds, macro_f1_scores, alpha=0.7, color='steelblue', edgecolor='black', linewidth=1.5)
+    plt.axhline(y=mean_acc, color='red', linestyle='--', linewidth=2, label=f'Mean: {mean_acc:.4f}')
+    plt.axhline(y=mean_acc + std_acc, color='orange', linestyle='--', linewidth=1, alpha=0.7, label=f'±1 Std')
+    plt.axhline(y=mean_acc - std_acc, color='orange', linestyle='--', linewidth=1, alpha=0.7)
+    plt.xlabel('Fold', fontsize=12)
+    plt.ylabel('Macro-F1 Score (Primary Metric)', fontsize=12)
+    plt.title(f'Cross-Validation Results - {config.MODEL_NAME}\nMean Macro-F1: {mean_acc:.4f} ± {std_acc:.4f}', 
+              fontsize=14, fontweight='bold')
+    plt.legend(fontsize=10)
+    plt.grid(True, alpha=0.3, axis='y')
+    plt.xticks(folds)
+    
+    final_plot_path = config.LOG_DIR / 'plots' / f'{config.MODEL_NAME}_cv_comparison.png'
+    plt.savefig(final_plot_path, dpi=300, bbox_inches='tight')
+    plt.close()
+    print(f"Saved CV comparison plot to {final_plot_path}")
 
 if __name__ == '__main__':
     main()
