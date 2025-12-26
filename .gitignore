@@ -38,7 +38,7 @@ ENV/
 *.ipynb
 
 # Model outputs
-outputs/
+outputs/models/
 *.pth
 *.pt
 *.ckpt
@@ -48,11 +48,11 @@ outputs/
 # Data files (too large for git)
 phase1/
 phase2/
-*.csv
+# *.csv
 
 # Logs
 *.log
-logs/
+# logs/
 
 # OS
 .DS_Store
@@ -61,3 +61,10 @@ Thumbs.db
 # Kaggle
 .kaggle/
 
+
+# Allow prediction CSVs
+
+# Allow logs in outputs directory
+!outputs/predictions/*.csv
+# Allow logs in outputs directory
+!outputs/logs/

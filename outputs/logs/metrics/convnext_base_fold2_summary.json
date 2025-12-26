@@ -1,0 +1,23 @@
+{
+  "fold": 2,
+  "model_name": "convnext_base",
+  "best_val_macro_f1": 0.7444231062028688,
+  "best_val_acc": 91.66792225403043,
+  "total_epochs": 50,
+  "final_train_loss": 0.5312282004608557,
+  "final_train_acc": 80.3714027422028,
+  "final_val_loss": 2.0825582582216997,
+  "final_val_acc": 91.84872683441314,
+  "final_val_macro_f1": 0.7153675976084504,
+  "best_epoch": 43,
+  "config": {
+    "batch_size": 128,
+    "learning_rate": 3e-05,
+    "weight_decay": 0.0005,
+    "img_size": 448,
+    "num_epochs": 50,
+    "label_smoothing": 0.1,
+    "use_mixup": true,
+    "use_cutmix": true
+  }
+}
