@@ -46,7 +46,18 @@ def load_model(model_path, device='cuda'):
         model_name = 'efficientnet_b4'  # Default fallback
     
     model = get_model(model_name, num_classes=num_classes, pretrained=False)
-    model.load_state_dict(checkpoint['model_state_dict'])
+    
+    # Handle torch.compile prefix (_orig_mod.) - remove it if present
+    state_dict = checkpoint['model_state_dict']
+    if any(key.startswith('_orig_mod.') for key in state_dict.keys()):
+        # Remove _orig_mod. prefix from all keys
+        new_state_dict = {}
+        for key, value in state_dict.items():
+            new_key = key.replace('_orig_mod.', '')
+            new_state_dict[new_key] = value
+        state_dict = new_state_dict
+    
+    model.load_state_dict(state_dict)
     model.to(device)
     model.eval()
     
@@ -165,8 +176,6 @@ def predict_ensemble(model_paths, dataloader, device, tta=False, tta_transforms=
 
 def predict_test_set(config, model_paths=None, use_ensemble=True, tta=True):
     """Predict on test set"""
-    config = Config()
-    
     # Load test data
     test_df = pd.read_csv(config.PHASE2_TEST_CSV)
     test_dataset = WBCDataset(
