@@ -25,14 +25,61 @@ class Config:
     LOG_DIR = OUTPUT_DIR / 'logs'
     
     # Model settings
-    MODEL_NAME = 'convnext_base'  # ConvNeXt-Base: Modern CNN architecture, better than EfficientNet
+    MODEL_NAME = 'convnextv2_large'  # Optimized: ConvNeXt V2 Large (strongest), or change to 'swinv2_base_window8_256' / 'maxvit_base_tf_384' for other models
     PRETRAINED = True
     NUM_CLASSES = 13  # Will be updated based on actual classes
     
+    # Auto-train all ensemble models
+    TRAIN_ALL_ENSEMBLE = True  # If True, trains all ENSEMBLE_MODELS sequentially with optimized settings
+    
+    # Session 2: Pseudo-labeling and optimization
+    USE_PSEUDO_LABELS = True  # If True, automatically uses pseudo-labels if available (merged_train_with_pseudo.csv)
+    PSEUDO_LABEL_THRESHOLD = 0.95  # Confidence threshold for pseudo-labels
+    RUN_PSEUDO_LABELING = True  # If True, generates pseudo-labels after Session 1 training
+    RETRAIN_WITH_PSEUDO = True  # If True, retrains best models with pseudo-labels
+    
+    # Session 3: Final ensemble optimization and submission
+    ENSEMBLE_OPTIMIZATION = True  # If True, optimizes ensemble weights before final submission
+    ENSEMBLE_OPT_METHOD = 'all'  # 'classy', 'weighted', 'equal', 'grid_search', or 'all' (tests all methods)
+    FINAL_SUBMISSION_VALIDATION = True  # If True, validates submission format before saving
+    RUN_FINAL_SUBMISSION = True  # If True, generates final submission after Session 2
+    
+    # Multi-scale ensemble (optional, if memory allows)
+    USE_MULTI_SCALE_ENSEMBLE = False  # If True, ensembles predictions from multiple image sizes
+    MULTI_SCALE_SIZES = [448, 512, 576]  # Image sizes for multi-scale ensemble
+    
+    # Final submission settings
+    SUBMISSION_FILENAME = 'final_submission.csv'  # Final submission filename
+    SAVE_PREDICTION_PROBABILITIES = True  # Save probability distributions for analysis
+    
     # Training settings
-    BATCH_SIZE = 128  # Optimized for H200 (141GB memory) - was 32
+    # Note: For best models (V2 Large, Swin V2 Large, MaxViT XLarge), reduce BATCH_SIZE if OOM
+    # Recommended: V2 Large=64, Swin V2 Large=48, MaxViT XLarge=32 (adjust based on GPU memory)
+    BATCH_SIZE = 64  # Reduced for best models - increase to 96-128 for smaller models if memory allows
     NUM_EPOCHS = 50
-    LEARNING_RATE = 3e-5  # Further reduced from 5e-5 - validation loss still too high (5.4)
+    # FIXED: Learning rate tuned for Large models (was 3e-5, too low for Large/XLarge)
+    # Large models need slightly higher LR: 5e-5 for V2 Large, 4e-5 for Swin V2 Large, 3e-5 for MaxViT XLarge
+    LEARNING_RATE = 5e-5  # Optimized for Large models - will be auto-adjusted per model if TRAIN_ALL_ENSEMBLE=True
+    
+    # Model-specific settings (auto-applied when TRAIN_ALL_ENSEMBLE=True)
+    # Can be updated after hyperparameter optimization
+    MODEL_SPECIFIC_SETTINGS = {
+        'convnextv2_large': {
+            'learning_rate': 5e-5,
+            'batch_size': 64,
+            'drop_path_rate': 0.3,  # Can be optimized via hyperparameter_opt.py
+        },
+        'swinv2_large_window12to16_192to256': {
+            'learning_rate': 4e-5,
+            'batch_size': 48,
+            'drop_path_rate': 0.2,  # Can be optimized via hyperparameter_opt.py
+        },
+        'maxvit_xlarge_tf_384': {
+            'learning_rate': 3e-5,
+            'batch_size': 32,
+            'drop_path_rate': 0.2,  # Can be optimized via hyperparameter_opt.py
+        },
+    }
     WEIGHT_DECAY = 5e-4  # Reduced from 1e-3 - too strong regularization causing underfitting
     NUM_WORKERS = 8  # Increased for faster data loading (was 4)
     PIN_MEMORY = True
@@ -48,7 +95,7 @@ class Config:
     GRADIENT_CLIP_VALUE = 1.0  # Clip gradients at this value
     
     # Image settings
-    IMG_SIZE = 448  # Increased from 384 for better accuracy (use 512 if memory allows)
+    IMG_SIZE = 512  # Increased for better accuracy (was 448)
     MEAN = [0.485, 0.456, 0.406]  # ImageNet normalization
     STD = [0.229, 0.224, 0.225]
     
@@ -71,13 +118,15 @@ class Config:
     
     # Inference
     TTA = True  # Test Time Augmentation
-    TTA_NUM = 5  # Number of TTA iterations
+    TTA_NUM = 15  # Increased from 5 for better predictions
     
-    # Ensemble (ordered by priority)
+    # Ensemble (BEST AVAILABLE: 3 diverse architectures, maximum performance)
+    # Strategy: V2 Large (strongest ConvNeXt) + Swin V2 Large (best transformer) + MaxViT XLarge (best multi-axis)
+    # FIXED: Swin V2 window size optimized for 512 image size
     ENSEMBLE_MODELS = [
-        'convnext_base',  # Primary: Best architecture
-        'efficientnet_b5',  # Secondary: Backup
-        # 'swin_base_patch4_window7_224',  # Optional: Transformer variant
+        'convnextv2_large',                    # BEST ConvNeXt V2 - strongest CNN architecture
+        'swinv2_large_window12to16_192to256', # FIXED: Better window size for 512 images (was window12to24)
+        'maxvit_xlarge_tf_384',               # BEST MaxViT - XLarge variant (maximum performance)
     ]
     
     # Device

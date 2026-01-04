@@ -35,11 +35,15 @@ def train_model(model_name):
     config_module.Config.MODEL_NAME = original_model
 
 def main():
-    """Train multiple models for ensemble"""
+    """Train multiple models for ensemble - BEST AVAILABLE models strategy"""
+    # Strategy: 3 BEST diverse architectures (maximum performance, no redundancy)
+    # 1. V2 Large: Strongest ConvNeXt (best CNN accuracy)
+    # 2. Swin V2 Large: Best transformer (largest window, best accuracy)
+    # 3. MaxViT XLarge: Best multi-axis (maximum performance)
     models_to_train = [
-        'convnext_base',  # Primary: Best architecture
-        'efficientnet_b5',  # Secondary: Backup
-        # Add more models as needed (e.g., 'swin_base_patch4_window7_224')
+        'convnextv2_large',                    # BEST ConvNeXt V2 - strongest CNN
+        'swinv2_large_window12to16_192to256',   # FIXED: Optimized window size for 512 images
+        'maxvit_xlarge_tf_384',                # BEST MaxViT - XLarge variant
     ]
     
     print("Training ensemble models...")

@@ -230,18 +230,49 @@ def validate(model, dataloader, criterion, device, class_names=None, use_amp=Fal
     print(f"  Validation Debug - Unique predicted classes: {unique_preds}/13")
     
     # Debug: Per-class accuracy to identify which classes are failing
+    # CRITICAL: Special monitoring for BL (Blast) - most critical rare class
     if class_names:
         from collections import Counter
+        from sklearn.metrics import f1_score
         pred_counter = Counter(all_preds)
         label_counter = Counter(all_labels)
         print(f"  Validation Debug - Prediction distribution:")
+        
+        # Track BL class specifically (most critical rare class)
+        bl_class_idx = None
+        for i, cls_name in enumerate(class_names):
+            if cls_name == 'BL':
+                bl_class_idx = i
+                break
+        
         for i, cls_name in enumerate(class_names):
             pred_count = pred_counter.get(i, 0)
             label_count = label_counter.get(i, 0)
             if label_count > 0:
                 correct = sum(1 for p, l in zip(all_preds, all_labels) if p == i and l == i)
                 acc = 100 * correct / label_count if label_count > 0 else 0
-                print(f"    {cls_name}: {correct}/{label_count} correct ({acc:.1f}%) | Predicted: {pred_count} times")
+                
+                # Compute per-class F1
+                y_true_binary = [1 if l == i else 0 for l in all_labels]
+                y_pred_binary = [1 if p == i else 0 for p in all_preds]
+                f1 = f1_score(y_true_binary, y_pred_binary, zero_division=0)
+                
+                # Highlight BL class and rare classes
+                marker = " ⚠️ [BL - CRITICAL]" if cls_name == 'BL' else (" [RARE]" if label_count < 100 else "")
+                print(f"    {cls_name}: {correct}/{label_count} correct ({acc:.1f}%) | F1: {f1:.4f} | Predicted: {pred_count} times{marker}")
+        
+        # Special warning if BL performance is poor
+        if bl_class_idx is not None:
+            bl_label_count = label_counter.get(bl_class_idx, 0)
+            if bl_label_count > 0:
+                bl_correct = sum(1 for p, l in zip(all_preds, all_labels) if p == bl_class_idx and l == bl_class_idx)
+                bl_acc = 100 * bl_correct / bl_label_count
+                bl_y_true = [1 if l == bl_class_idx else 0 for l in all_labels]
+                bl_y_pred = [1 if p == bl_class_idx else 0 for p in all_preds]
+                bl_f1 = f1_score(bl_y_true, bl_y_pred, zero_division=0)
+                if bl_f1 < 0.5 or bl_acc < 50:
+                    print(f"  ⚠️ WARNING: BL (Blast) class performance is LOW - F1: {bl_f1:.4f}, Acc: {bl_acc:.1f}%")
+                    print(f"     Consider: Increasing rare class augmentation, adjusting class weights, or using focal loss")
     
     # Compute competition metrics
     metrics = compute_all_metrics(
@@ -269,11 +300,18 @@ def save_training_results(fold, history, config, best_val_macro_f1, best_val_met
     
     # Save summary JSON
     best_epoch_idx = np.argmax(history['val_macro_f1']) if history['val_macro_f1'] else -1
+    
+    # CRITICAL: Extract BL class performance from best metrics
+    bl_performance = None
+    if best_val_metrics and best_val_metrics.get('per_class') and 'BL' in best_val_metrics['per_class']:
+        bl_performance = best_val_metrics['per_class']['BL']
+    
     summary = {
         'fold': fold,
         'model_name': config.MODEL_NAME,
         'best_val_macro_f1': best_val_macro_f1,  # Primary competition metric
         'best_val_acc': history['val_acc'][best_epoch_idx] if best_epoch_idx >= 0 and history['val_acc'] else None,
+        'bl_performance': bl_performance,  # Track BL class (most critical rare class)
         'total_epochs': len(history['epoch']),
         'final_train_loss': history['train_loss'][-1] if history['train_loss'] else None,
         'final_train_acc': history['train_acc'][-1] if history['train_acc'] else None,
@@ -522,12 +560,24 @@ def train_fold(fold, train_df, val_df, config):
     # Create augmentation transforms
     if config.USE_CLASS_AWARE_AUG:
         # Create separate transforms for normal and rare classes
-        normal_transform = get_train_transforms(config.IMG_SIZE, is_rare_class=False)
-        rare_transform = get_train_transforms(config.IMG_SIZE, is_rare_class=True)
+        normal_transform = get_train_transforms(
+            config.IMG_SIZE, 
+            is_rare_class=False,
+            domain_adaptation=True  # Enable domain adaptation
+        )
+        rare_transform = get_train_transforms(
+            config.IMG_SIZE, 
+            is_rare_class=True,
+            domain_adaptation=True  # Enable domain adaptation
+        )
         train_transform = {'normal': normal_transform, 'rare': rare_transform}
     else:
         # Use standard augmentation for all classes
-        train_transform = get_train_transforms(config.IMG_SIZE, is_rare_class=False)
+        train_transform = get_train_transforms(
+            config.IMG_SIZE, 
+            is_rare_class=False,
+            domain_adaptation=True  # Enable domain adaptation
+        )
     
     # CRITICAL FIX: Create train dataset first to establish class mapping
     train_dataset = CombinedDataset(
@@ -622,23 +672,31 @@ def train_fold(fold, train_df, val_df, config):
     )
     
     # Create model with moderate regularization (reduced to improve validation)
+    # Support model-specific drop_path_rate from MODEL_SPECIFIC_SETTINGS
+    model_specific_drop_path = None
+    if config.MODEL_NAME in config.MODEL_SPECIFIC_SETTINGS:
+        model_specific_drop_path = config.MODEL_SPECIFIC_SETTINGS[config.MODEL_NAME].get('drop_path_rate')
+    
+    # Use model-specific drop_path_rate if available, otherwise use defaults
     if config.MODEL_NAME.startswith('convnext'):
         # ConvNeXt uses drop_path_rate only (no drop_rate)
+        drop_path = model_specific_drop_path if model_specific_drop_path is not None else 0.2
         model = get_model(
             model_name=config.MODEL_NAME,
             num_classes=train_dataset.num_classes,
             pretrained=config.PRETRAINED,
             drop_rate=None,  # ConvNeXt doesn't use drop_rate
-            drop_path_rate=0.2  # Reduced from 0.3 - too much dropout hurting validation
+            drop_path_rate=drop_path
         ).to(config.DEVICE)
     else:
-        # Other models (EfficientNet, etc.)
+        # Other models (EfficientNet, Swin, MaxViT, etc.)
+        drop_path = model_specific_drop_path if model_specific_drop_path is not None else 0.2
         model = get_model(
             model_name=config.MODEL_NAME,
             num_classes=train_dataset.num_classes,
             pretrained=config.PRETRAINED,
             drop_rate=0.3,  # Reduced from 0.4
-            drop_path_rate=0.2  # Reduced from 0.3
+            drop_path_rate=drop_path
         ).to(config.DEVICE)
     
     # Compile model for faster training (PyTorch 2.0+)
@@ -787,17 +845,29 @@ def train_fold(fold, train_df, val_df, config):
             best_val_metrics = val_metrics
             patience_counter = 0
             model_path = config.MODEL_DIR / f'{config.MODEL_NAME}_fold{fold}_best.pth'
+            
+            # CRITICAL: Extract BL class performance for monitoring
+            bl_performance = None
+            if val_metrics.get('per_class') and 'BL' in val_metrics['per_class']:
+                bl_performance = val_metrics['per_class']['BL']
+            
             torch.save({
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'val_acc': val_acc,
                 'val_macro_f1': macro_f1,
                 'val_metrics': val_metrics,
+                'bl_performance': bl_performance,  # Track BL class specifically
                 'epoch': epoch,
                 'class_to_idx': train_dataset.class_to_idx,
                 'idx_to_class': train_dataset.idx_to_class,
             }, model_path)
-            print(f"✓ Saved best model - Val Acc: {val_acc:.2f}%, Macro-F1: {macro_f1:.4f}")
+            
+            # Print BL performance if available
+            bl_info = ""
+            if bl_performance:
+                bl_info = f" | BL F1: {bl_performance['f1']:.4f}"
+            print(f"✓ Saved best model - Val Acc: {val_acc:.2f}%, Macro-F1: {macro_f1:.4f}{bl_info}")
         else:
             patience_counter += 1
         
@@ -811,25 +881,121 @@ def train_fold(fold, train_df, val_df, config):
     
     return best_val_macro_f1, best_val_metrics
 
-def main():
-    """Main training function"""
-    config = Config()
+def train_all_ensemble_models(config):
+    """
+    Train all ensemble models sequentially with optimized settings for each.
+    This eliminates the need to manually change config for each model.
+    """
+    print("\n" + "="*60)
+    print("AUTO-TRAINING ALL ENSEMBLE MODELS")
+    print("="*60)
+    print(f"Models to train: {len(config.ENSEMBLE_MODELS)}")
+    for i, model in enumerate(config.ENSEMBLE_MODELS, 1):
+        print(f"  {i}. {model}")
+    print("="*60 + "\n")
     
-    # Load data
+    # Store original settings
+    original_model_name = config.MODEL_NAME
+    original_lr = config.LEARNING_RATE
+    original_batch_size = config.BATCH_SIZE
+    
+    all_results = []
+    
+    for model_idx, model_name in enumerate(config.ENSEMBLE_MODELS, 1):
+        print("\n" + "="*60)
+        print(f"Training Model {model_idx}/{len(config.ENSEMBLE_MODELS)}: {model_name}")
+        print("="*60)
+        
+        # Update model name
+        config.MODEL_NAME = model_name
+        
+        # Apply model-specific settings if available
+        if model_name in config.MODEL_SPECIFIC_SETTINGS:
+            settings = config.MODEL_SPECIFIC_SETTINGS[model_name]
+            config.LEARNING_RATE = settings.get('learning_rate', config.LEARNING_RATE)
+            config.BATCH_SIZE = settings.get('batch_size', config.BATCH_SIZE)
+            print(f"Applied model-specific settings:")
+            print(f"  Learning Rate: {config.LEARNING_RATE}")
+            print(f"  Batch Size: {config.BATCH_SIZE}")
+        else:
+            print(f"Using default settings:")
+            print(f"  Learning Rate: {config.LEARNING_RATE}")
+            print(f"  Batch Size: {config.BATCH_SIZE}")
+        
+        try:
+            # Train this model
+            val_macro_f1, val_metrics = train_single_model(config)
+            
+            all_results.append({
+                'model_name': model_name,
+                'val_macro_f1': val_macro_f1,
+                'val_metrics': val_metrics
+            })
+            
+            print(f"\n✓ Model {model_idx} completed - Macro-F1: {val_macro_f1:.4f}")
+            
+        except Exception as e:
+            print(f"\n✗ Error training {model_name}: {e}")
+            import traceback
+            traceback.print_exc()
+            continue
+    
+    # Restore original settings
+    config.MODEL_NAME = original_model_name
+    config.LEARNING_RATE = original_lr
+    config.BATCH_SIZE = original_batch_size
+    
+    # Print summary
+    print("\n" + "="*60)
+    print("ENSEMBLE TRAINING SUMMARY")
+    print("="*60)
+    for i, result in enumerate(all_results, 1):
+        print(f"{i}. {result['model_name']}: Macro-F1 = {result['val_macro_f1']:.4f}")
+    
+    if all_results:
+        mean_f1 = np.mean([r['val_macro_f1'] for r in all_results])
+        print(f"\nMean Macro-F1 across all models: {mean_f1:.4f}")
+        print("="*60)
+    
+    return all_results
+
+def train_single_model(config):
+    """
+    Train a single model (extracted from main() for reuse)
+    Supports pseudo-labels automatically if available
+    """
+    # Load data - support pseudo-labels
     print("Loading data...")
-    phase2_train = pd.read_csv(config.PHASE2_TRAIN_CSV)
     
-    # Combine phase1 and phase2 for training
-    phase1 = pd.read_csv(config.PHASE1_CSV)
-    phase1 = phase1[phase1['split'] == 'phase1_train']
-    phase1 = phase1[['ID', 'labels']].copy()
-    phase1['split'] = 'phase1_train'
+    # Check if pseudo-labels exist (Session 2 feature)
+    merged_train_path = config.PRED_DIR / 'merged_train_with_pseudo.csv'
+    use_pseudo_labels = merged_train_path.exists()
     
-    # Combine datasets
-    all_train = pd.concat([
-        phase2_train[['ID', 'labels']],
-        phase1[['ID', 'labels']]
-    ], ignore_index=True)
+    if use_pseudo_labels:
+        print("✓ Found merged training data with pseudo-labels (Session 2)")
+        all_train = pd.read_csv(merged_train_path)
+        print(f"  Total samples (including pseudo-labels): {len(all_train)}")
+    else:
+        print("Using original training data only (Session 1)")
+        phase2_train = pd.read_csv(config.PHASE2_TRAIN_CSV)
+        
+        # CRITICAL FIX: Include Phase 2 Eval set in training (README says "may be used for training")
+        # This adds ~5,350 additional images (10% more data) for better performance
+        phase2_eval = pd.read_csv(config.PHASE2_EVAL_CSV)
+        print(f"Including Phase 2 Eval set: {len(phase2_eval)} additional samples")
+        
+        # Combine phase1 and phase2 for training
+        phase1 = pd.read_csv(config.PHASE1_CSV)
+        phase1 = phase1[phase1['split'] == 'phase1_train']
+        phase1 = phase1[['ID', 'labels']].copy()
+        phase1['split'] = 'phase1_train'
+        
+        # Combine ALL available training data (Phase 1 + Phase 2 Train + Phase 2 Eval)
+        all_train = pd.concat([
+            phase2_train[['ID', 'labels']],
+            phase1[['ID', 'labels']],
+            phase2_eval[['ID', 'labels']]  # CRITICAL: Include eval set for maximum training data
+        ], ignore_index=True)
     
     print(f"Total training samples: {len(all_train)}")
     print(f"Class distribution:\n{all_train['labels'].value_counts()}")
@@ -860,7 +1026,12 @@ def main():
             'train_samples': len(train_df),
             'val_samples': len(val_df)
         })
-        print(f"Fold {fold} - Macro-F1: {val_macro_f1:.4f} (Primary Metric)")
+        # Print BL class performance if available
+        bl_info = ""
+        if val_metrics and val_metrics.get('per_class') and 'BL' in val_metrics['per_class']:
+            bl_f1 = val_metrics['per_class']['BL']['f1']
+            bl_info = f" | BL F1: {bl_f1:.4f}"
+        print(f"Fold {fold} - Macro-F1: {val_macro_f1:.4f} (Primary Metric){bl_info}")
     
     # Calculate final statistics
     mean_acc = np.mean(fold_scores)
@@ -876,9 +1047,9 @@ def main():
     print(f"{'='*60}")
     
     # Calculate tie-breaking metrics
-    mean_balanced_acc = np.mean([f['balanced_accuracy'] for f in fold_details])
-    mean_macro_prec = np.mean([f['macro_precision'] for f in fold_details])
-    mean_macro_spec = np.mean([f['macro_specificity'] for f in fold_details])
+    mean_balanced_acc = np.mean([f['val_balanced_accuracy'] for f in fold_details])
+    mean_macro_prec = np.mean([f['val_macro_precision'] for f in fold_details])
+    mean_macro_spec = np.mean([f['val_macro_specificity'] for f in fold_details])
     
     print(f"\nTie-Breaking Metrics:")
     print(f"Mean Balanced Accuracy: {mean_balanced_acc:.4f}")
@@ -947,6 +1118,180 @@ def main():
     plt.savefig(final_plot_path, dpi=300, bbox_inches='tight')
     plt.close()
     print(f"Saved CV comparison plot to {final_plot_path}")
+    
+    return mean_acc, fold_details[0]['val_metrics'] if fold_details else None
+
+def main():
+    """Main training function - Integrated Session 1 & 2 workflow"""
+    config = Config()
+    
+    # Check if we should train all ensemble models automatically
+    if config.TRAIN_ALL_ENSEMBLE:
+        print("\n" + "="*60)
+        print("AUTO-TRAIN MODE ENABLED - SESSION 1")
+        print("="*60)
+        print("Will train all ensemble models sequentially with optimized settings.")
+        print("No need to manually change config between models!")
+        print("="*60)
+        
+        # Train all models (Session 1)
+        all_results = train_all_ensemble_models(config)
+        
+        # Session 2: Pseudo-labeling and retraining
+        if config.RUN_PSEUDO_LABELING:
+            print("\n" + "="*60)
+            print("SESSION 2: PSEUDO-LABELING")
+            print("="*60)
+            
+            # Generate pseudo-labels
+            try:
+                from scripts.pseudo_labeling import generate_pseudo_labels, merge_pseudo_labels_with_training
+                
+                # Find all trained models
+                model_paths = list(config.MODEL_DIR.glob('*_best.pth'))
+                
+                if model_paths:
+                    print(f"\nGenerating pseudo-labels using {len(model_paths)} models...")
+                    pseudo_df, full_results = generate_pseudo_labels(
+                        config,
+                        model_paths,
+                        confidence_threshold=config.PSEUDO_LABEL_THRESHOLD,
+                        min_samples_per_class=10
+                    )
+                    
+                    # Merge with training data
+                    pseudo_path = config.PRED_DIR / f'pseudo_labels_thresh{config.PSEUDO_LABEL_THRESHOLD}.csv'
+                    merged_train = merge_pseudo_labels_with_training(config, pseudo_path)
+                    
+                    print(f"\n✓ Pseudo-labeling complete: {len(pseudo_df)} high-confidence samples added")
+                    
+                    # Retrain best models with pseudo-labels
+                    if config.RETRAIN_WITH_PSEUDO and len(all_results) > 0:
+                        print("\n" + "="*60)
+                        print("SESSION 2: RETRAINING WITH PSEUDO-LABELS")
+                        print("="*60)
+                        
+                        # Find best 2 models
+                        sorted_results = sorted(all_results, key=lambda x: x['val_macro_f1'], reverse=True)
+                        best_models = [r['model_name'] for r in sorted_results[:2]]
+                        
+                        print(f"Retraining top 2 models: {best_models}")
+                        
+                        for model_name in best_models:
+                            print(f"\nRetraining {model_name} with pseudo-labels...")
+                            
+                            # Update model name
+                            original_model = config.MODEL_NAME
+                            config.MODEL_NAME = model_name
+                            
+                            # Apply model-specific settings
+                            if model_name in config.MODEL_SPECIFIC_SETTINGS:
+                                settings = config.MODEL_SPECIFIC_SETTINGS[model_name]
+                                config.LEARNING_RATE = settings.get('learning_rate', config.LEARNING_RATE)
+                                config.BATCH_SIZE = settings.get('batch_size', config.BATCH_SIZE)
+                            
+                            try:
+                                # Train with pseudo-labels (train_single_model will auto-detect)
+                                train_single_model(config)
+                                print(f"✓ {model_name} retrained successfully")
+                            except Exception as e:
+                                print(f"✗ Error retraining {model_name}: {e}")
+                                import traceback
+                                traceback.print_exc()
+                            
+                            # Restore original
+                            config.MODEL_NAME = original_model
+                        
+                        print("\n" + "="*60)
+                        print("SESSION 2 COMPLETE")
+                        print("="*60)
+                        print("All models trained with pseudo-labels!")
+                else:
+                    print("⚠ No models found for pseudo-labeling")
+            except Exception as e:
+                print(f"⚠ Pseudo-labeling failed: {e}")
+                import traceback
+                traceback.print_exc()
+                print("Continuing without pseudo-labels...")
+        
+        # Session 3: Final ensemble optimization and submission
+        if getattr(config, 'RUN_FINAL_SUBMISSION', False):
+            print("\n" + "="*60)
+            print("SESSION 3: FINAL SUBMISSION")
+            print("="*60)
+            
+            try:
+                from scripts.ensemble_optimizer import optimize_ensemble_weights
+                from scripts.final_submission import prepare_final_submission
+                from scripts.validate_submission import comprehensive_validation
+                
+                # Step 1: Optimize ensemble weights
+                if getattr(config, 'ENSEMBLE_OPTIMIZATION', True):
+                    print("\nStep 1: Optimizing ensemble weights...")
+                    try:
+                        model_paths = list(config.MODEL_DIR.glob('*_best.pth'))
+                        if model_paths:
+                            best_weights, best_f1, best_method, results = optimize_ensemble_weights(
+                                config,
+                                model_paths,
+                                method=getattr(config, 'ENSEMBLE_OPT_METHOD', 'all')
+                            )
+                            print(f"✓ Best ensemble method: {best_method} (F1: {best_f1:.5f})")
+                        else:
+                            print("⚠ No models found for optimization")
+                    except Exception as e:
+                        print(f"⚠ Ensemble optimization failed: {e}")
+                        import traceback
+                        traceback.print_exc()
+                
+                # Step 2: Generate final submission
+                print("\nStep 2: Generating final submission...")
+                try:
+                    submission, metrics = prepare_final_submission(
+                        config,
+                        use_optimized_weights=getattr(config, 'ENSEMBLE_OPTIMIZATION', True),
+                        validate=getattr(config, 'FINAL_SUBMISSION_VALIDATION', True)
+                    )
+                    print(f"✓ Final submission generated!")
+                    print(f"  Eval Macro F1: {metrics['eval_macro_f1']:.5f}")
+                except Exception as e:
+                    print(f"⚠ Final submission generation failed: {e}")
+                    import traceback
+                    traceback.print_exc()
+                
+                # Step 3: Validate submission
+                print("\nStep 3: Validating submission...")
+                try:
+                    submission_path = config.PRED_DIR / getattr(config, 'SUBMISSION_FILENAME', 'final_submission.csv')
+                    if submission_path.exists():
+                        is_valid, results = comprehensive_validation(
+                            submission_path,
+                            config.PHASE2_TEST_CSV
+                        )
+                        if is_valid:
+                            print("✓ Submission validation passed!")
+                        else:
+                            print("⚠ Submission has validation issues (check warnings above)")
+                    else:
+                        print("⚠ Submission file not found")
+                except Exception as e:
+                    print(f"⚠ Validation failed: {e}")
+                    import traceback
+                    traceback.print_exc()
+                
+                print("\n" + "="*60)
+                print("SESSION 3 COMPLETE")
+                print("="*60)
+                print("Final submission ready for Kaggle!")
+                
+            except Exception as e:
+                print(f"⚠ Session 3 failed: {e}")
+                import traceback
+                traceback.print_exc()
+                print("Continuing...")
+    else:
+        # Original behavior: train single model
+        train_single_model(config)
 
 if __name__ == '__main__':
     main()

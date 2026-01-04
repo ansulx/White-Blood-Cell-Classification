@@ -20,9 +20,14 @@ def get_model(
     Get model architecture from timm library.
     
     Supported architectures:
-    - ConvNeXt (RECOMMENDED): convnext_tiny, convnext_small, convnext_base, convnext_large
+    - ConvNeXt: convnext_tiny, convnext_small, convnext_base, convnext_large
       * Modern CNN architecture, outperforms EfficientNet
       * Better for medical imaging tasks
+      * Uses drop_path_rate only (no drop_rate)
+    
+    - ConvNeXt V2 (RECOMMENDED): convnextv2_base, convnextv2_large
+      * Improved version with better training dynamics (FCMAE pretraining)
+      * convnextv2_large recommended for best accuracy
       * Uses drop_path_rate only (no drop_rate)
     
     - EfficientNet: efficientnet_b0 through efficientnet_b7
@@ -81,10 +86,25 @@ def get_model(
         model_kwargs['drop_path_rate'] = drop_path_rate if drop_path_rate is not None else 0.2
         model = timm.create_model(model_name, **model_kwargs)
     
+    elif model_name.startswith('swinv2') or model_name.startswith('swin_v2'):
+        # Swin Transformer V2 models
+        model_kwargs['drop_path_rate'] = drop_path_rate if drop_path_rate is not None else 0.2
+        model = timm.create_model(model_name, **model_kwargs)
+    
+    elif model_name.startswith('maxvit'):
+        # MaxViT models - Multi-Axis Vision Transformer
+        model_kwargs['drop_path_rate'] = drop_path_rate if drop_path_rate is not None else 0.2
+        model = timm.create_model(model_name, **model_kwargs)
+    
+    elif model_name.startswith('convnextv2') or model_name.startswith('convnext_v2'):
+        # ConvNeXt V2 models
+        model_kwargs['drop_path_rate'] = drop_path_rate if drop_path_rate is not None else 0.3
+        model = timm.create_model(model_name, **model_kwargs)
+    
     else:
         raise ValueError(
             f"Unknown model: {model_name}. "
-            f"Supported: EfficientNet, ConvNeXt, ResNet, Swin Transformer"
+            f"Supported: EfficientNet, ConvNeXt, ConvNeXt V2, ResNet, Swin Transformer, Swin V2, MaxViT"
         )
     
     return model
