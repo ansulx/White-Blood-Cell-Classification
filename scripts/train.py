@@ -496,15 +496,21 @@ def train_fold(fold, train_df, val_df, config):
             self.rare_classes = rare_classes if rare_classes is not None else set()
             self.class_aware_aug = class_aware_aug
             
-            # Determine image directories
+            # Determine image directories - check phase1, phase2/train, and phase2/eval
             self.img_paths = []
             for _, row in df.iterrows():
                 img_name = row['ID']
                 phase1_path = config.PHASE1_DIR / img_name
-                phase2_path = config.PHASE2_TRAIN_DIR / img_name
+                phase2_train_path = config.PHASE2_TRAIN_DIR / img_name
+                phase2_eval_path = config.PHASE2_EVAL_DIR / img_name
                 if phase1_path.exists():
                     self.img_paths.append(config.PHASE1_DIR)
+                elif phase2_train_path.exists():
+                    self.img_paths.append(config.PHASE2_TRAIN_DIR)
+                elif phase2_eval_path.exists():
+                    self.img_paths.append(config.PHASE2_EVAL_DIR)
                 else:
+                    # Default to phase2/train (should rarely happen)
                     self.img_paths.append(config.PHASE2_TRAIN_DIR)
             
             if is_train:
