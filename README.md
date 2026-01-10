@@ -10,7 +10,7 @@ A comprehensive, research-grade solution for the **WBCBench 2026** Kaggle compet
 
 ## 🚀 **ONE-COMMAND WORKFLOW**
 
-```bash
+```bash`
 python scripts/train.py
 ```
 

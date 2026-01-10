@@ -569,7 +569,7 @@ def predict_eval_set(config, model_paths=None, use_ensemble=True, tta=True, use_
             )
         else:
             preds, probs, names, idx_to_class = predict_ensemble(
-                model_paths, eval_loader, config.DEVICE, tta=tta, tta_transforms=tta_transforms
+            model_paths, eval_loader, config.DEVICE, tta=tta, tta_transforms=tta_transforms
             )
     else:
         if model_paths is None:
