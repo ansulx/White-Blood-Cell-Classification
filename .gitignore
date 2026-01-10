@@ -61,10 +61,25 @@ Thumbs.db
 # Kaggle
 .kaggle/
 
+# ML Frameworks & Tools
+.wandb/                  # Weights & Biases
+mlruns/                  # MLflow
+.pytest_cache/           # pytest cache
+.mypy_cache/             # mypy cache
+.coverage                # coverage reports
+htmlcov/                 # HTML coverage reports
+*.cover                  # coverage files
+
+# Large visualization files (can be regenerated)
+class_samples_visualization.png
+
+# Temporary files
+tmp/
+temp/
+*.tmp
 
 # Allow prediction CSVs
-
-# Allow logs in outputs directory
 !outputs/predictions/*.csv
+
 # Allow logs in outputs directory
 !outputs/logs/
