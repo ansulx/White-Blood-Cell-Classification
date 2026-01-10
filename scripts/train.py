@@ -440,17 +440,21 @@ def train_fold(fold, train_df, val_df, config):
     print(f"{'='*60}")
     
     # Determine image directory based on split
-    # Check if images are in phase1 or phase2
+    # Check if images are in phase1, phase2/train, or phase2/eval
     def get_img_path(row):
         img_name = row['ID']
         phase1_path = config.PHASE1_DIR / img_name
-        phase2_path = config.PHASE2_TRAIN_DIR / img_name
+        phase2_train_path = config.PHASE2_TRAIN_DIR / img_name
+        phase2_eval_path = config.PHASE2_EVAL_DIR / img_name
         if phase1_path.exists():
             return config.PHASE1_DIR
-        elif phase2_path.exists():
+        elif phase2_train_path.exists():
             return config.PHASE2_TRAIN_DIR
+        elif phase2_eval_path.exists():
+            return config.PHASE2_EVAL_DIR
         else:
-            return config.PHASE2_TRAIN_DIR  # Default
+            # Try phase2/train as default, but this should rarely happen
+            return config.PHASE2_TRAIN_DIR
     
     # Identify rare classes for class-aware augmentation
     from src.data.dataset import identify_rare_classes
