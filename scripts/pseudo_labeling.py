@@ -64,7 +64,9 @@ def generate_pseudo_labels(
         batch_size=config.BATCH_SIZE,
         shuffle=False,
         num_workers=config.NUM_WORKERS,
-        pin_memory=config.PIN_MEMORY
+        pin_memory=config.PIN_MEMORY,
+        prefetch_factor=getattr(config, 'PREFETCH_FACTOR', 4),
+        persistent_workers=getattr(config, 'PERSISTENT_WORKERS', True) if config.NUM_WORKERS > 0 else False
     )
     
     # Get TTA transforms

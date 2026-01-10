@@ -83,6 +83,8 @@ class Config:
     WEIGHT_DECAY = 5e-4  # Reduced from 1e-3 - too strong regularization causing underfitting
     NUM_WORKERS = 8  # Increased for faster data loading (was 4)
     PIN_MEMORY = True
+    PREFETCH_FACTOR = 4  # Number of batches to prefetch per worker (4-8 optimal, default=2)
+    PERSISTENT_WORKERS = True  # Keep workers alive across epochs (faster epoch 2+)
     
     # GPU Optimization
     USE_MIXED_PRECISION = True  # Automatic Mixed Precision (AMP) - 2x speedup

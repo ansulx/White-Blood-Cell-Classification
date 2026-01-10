@@ -474,7 +474,9 @@ def predict_test_set(config, model_paths=None, use_ensemble=True, tta=True, use_
         batch_size=config.BATCH_SIZE,
         shuffle=False,
         num_workers=config.NUM_WORKERS,
-        pin_memory=config.PIN_MEMORY
+        pin_memory=config.PIN_MEMORY,
+        prefetch_factor=getattr(config, 'PREFETCH_FACTOR', 4),
+        persistent_workers=getattr(config, 'PERSISTENT_WORKERS', True) if config.NUM_WORKERS > 0 else False
     )
     
     # Get TTA transforms if needed
@@ -548,7 +550,9 @@ def predict_eval_set(config, model_paths=None, use_ensemble=True, tta=True, use_
         batch_size=config.BATCH_SIZE,
         shuffle=False,
         num_workers=config.NUM_WORKERS,
-        pin_memory=config.PIN_MEMORY
+        pin_memory=config.PIN_MEMORY,
+        prefetch_factor=getattr(config, 'PREFETCH_FACTOR', 4),
+        persistent_workers=getattr(config, 'PERSISTENT_WORKERS', True) if config.NUM_WORKERS > 0 else False
     )
     
     tta_transforms = None

@@ -652,7 +652,9 @@ def train_fold(fold, train_df, val_df, config):
             batch_size=config.BATCH_SIZE,
             sampler=sampler,
             num_workers=config.NUM_WORKERS,
-            pin_memory=config.PIN_MEMORY
+            pin_memory=config.PIN_MEMORY,
+            prefetch_factor=getattr(config, 'PREFETCH_FACTOR', 4),
+            persistent_workers=getattr(config, 'PERSISTENT_WORKERS', True) if config.NUM_WORKERS > 0 else False
         )
     else:
         train_loader = DataLoader(
@@ -660,7 +662,9 @@ def train_fold(fold, train_df, val_df, config):
             batch_size=config.BATCH_SIZE,
             shuffle=True,
             num_workers=config.NUM_WORKERS,
-            pin_memory=config.PIN_MEMORY
+            pin_memory=config.PIN_MEMORY,
+            prefetch_factor=getattr(config, 'PREFETCH_FACTOR', 4),
+            persistent_workers=getattr(config, 'PERSISTENT_WORKERS', True) if config.NUM_WORKERS > 0 else False
         )
     
     val_loader = DataLoader(
@@ -668,7 +672,9 @@ def train_fold(fold, train_df, val_df, config):
         batch_size=config.BATCH_SIZE,
         shuffle=False,
         num_workers=config.NUM_WORKERS,
-        pin_memory=config.PIN_MEMORY
+        pin_memory=config.PIN_MEMORY,
+        prefetch_factor=getattr(config, 'PREFETCH_FACTOR', 4),
+        persistent_workers=getattr(config, 'PERSISTENT_WORKERS', True) if config.NUM_WORKERS > 0 else False
     )
     
     # Create model with moderate regularization (reduced to improve validation)
