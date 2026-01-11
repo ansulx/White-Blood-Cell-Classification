@@ -1188,7 +1188,37 @@ def main():
                         print("SESSION 2: RETRAINING WITH PSEUDO-LABELS")
                         print("="*60)
                         
-                        # Find best 2 models
+                        # Load existing model results from summary files (for models not trained in this session)
+                        # This includes models like convnextv2_large that were trained earlier
+                        existing_models = set(r['model_name'] for r in all_results)
+                        all_available_models = set()
+                        
+                        # Check all model files to find models not in all_results
+                        model_files = list(config.MODEL_DIR.glob('*_best.pth'))
+                        for model_path in model_files:
+                            # Extract model name from filename (e.g., "convnextv2_large_fold0_best.pth" -> "convnextv2_large")
+                            model_name = '_'.join(model_path.stem.split('_')[:-2])  # Remove "_fold0_best"
+                            all_available_models.add(model_name)
+                        
+                        # Load results for models not in all_results
+                        for model_name in all_available_models:
+                            if model_name not in existing_models:
+                                # Try to load final summary JSON
+                                final_summary_path = config.LOG_DIR / 'metrics' / f'{model_name}_final_summary.json'
+                                if final_summary_path.exists():
+                                    try:
+                                        with open(final_summary_path) as f:
+                                            summary_data = json.load(f)
+                                        all_results.append({
+                                            'model_name': model_name,
+                                            'val_macro_f1': summary_data.get('mean_macro_f1', 0.0),
+                                            'val_metrics': None  # Not needed for retraining selection
+                                        })
+                                        print(f"✓ Loaded existing model results: {model_name} (Macro-F1: {summary_data.get('mean_macro_f1', 0.0):.4f})")
+                                    except Exception as e:
+                                        print(f"⚠ Could not load results for {model_name}: {e}")
+                        
+                        # Find best 2 models from all available (including existing ones)
                         sorted_results = sorted(all_results, key=lambda x: x['val_macro_f1'], reverse=True)
                         best_models = [r['model_name'] for r in sorted_results[:2]]
                         
