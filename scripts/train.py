@@ -716,12 +716,16 @@ def train_fold(fold, train_df, val_df, config):
         ).to(config.DEVICE)
     
     # Compile model for faster training (PyTorch 2.0+)
+    # Skip compilation for MaxViT models (they have compatibility issues with torch.compile)
     if config.USE_TORCH_COMPILE and hasattr(torch, 'compile'):
-        try:
-            model = torch.compile(model, mode='reduce-overhead')
-            print("Model compiled with torch.compile for faster training")
-        except Exception as e:
-            print(f"Warning: torch.compile failed: {e}. Continuing without compilation.")
+        if 'maxvit' in config.MODEL_NAME.lower():
+            print("Skipping torch.compile for MaxViT (compatibility issue)")
+        else:
+            try:
+                model = torch.compile(model, mode='reduce-overhead')
+                print("Model compiled with torch.compile for faster training")
+            except Exception as e:
+                print(f"Warning: torch.compile failed: {e}. Continuing without compilation.")
     
     # Mixed precision scaler
     scaler = GradScaler() if config.USE_MIXED_PRECISION else None
@@ -914,6 +918,7 @@ def train_all_ensemble_models(config):
     original_model_name = config.MODEL_NAME
     original_lr = config.LEARNING_RATE
     original_batch_size = config.BATCH_SIZE
+    original_img_size = config.IMG_SIZE
     
     all_results = []
     
@@ -930,9 +935,14 @@ def train_all_ensemble_models(config):
             settings = config.MODEL_SPECIFIC_SETTINGS[model_name]
             config.LEARNING_RATE = settings.get('learning_rate', config.LEARNING_RATE)
             config.BATCH_SIZE = settings.get('batch_size', config.BATCH_SIZE)
+            # MaxViT models need specific image sizes (384 for maxvit_xlarge_tf_384)
+            if 'img_size' in settings:
+                config.IMG_SIZE = settings.get('img_size', config.IMG_SIZE)
             print(f"Applied model-specific settings:")
             print(f"  Learning Rate: {config.LEARNING_RATE}")
             print(f"  Batch Size: {config.BATCH_SIZE}")
+            if 'img_size' in settings:
+                print(f"  Image Size: {config.IMG_SIZE}")
         else:
             print(f"Using default settings:")
             print(f"  Learning Rate: {config.LEARNING_RATE}")
@@ -955,11 +965,17 @@ def train_all_ensemble_models(config):
             import traceback
             traceback.print_exc()
             continue
+        finally:
+            # Restore settings after each model (important for img_size)
+            config.LEARNING_RATE = original_lr
+            config.BATCH_SIZE = original_batch_size
+            config.IMG_SIZE = original_img_size
     
     # Restore original settings
     config.MODEL_NAME = original_model_name
     config.LEARNING_RATE = original_lr
     config.BATCH_SIZE = original_batch_size
+    config.IMG_SIZE = original_img_size
     
     # Print summary
     print("\n" + "="*60)

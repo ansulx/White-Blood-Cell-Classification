@@ -78,6 +78,7 @@ class Config:
             'learning_rate': 3e-5,
             'batch_size': 32,
             'drop_path_rate': 0.2,  # Can be optimized via hyperparameter_opt.py
+            'img_size': 384,  # MaxViT XLarge requires 384x384 images
         },
     }
     WEIGHT_DECAY = 5e-4  # Reduced from 1e-3 - too strong regularization causing underfitting
