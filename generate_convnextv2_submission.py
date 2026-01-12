@@ -183,9 +183,12 @@ def main():
         is_train=False
     )
     
+    # Use larger batch size for faster inference (if memory allows)
+    fast_batch_size = min(config.BATCH_SIZE * 2, 96)  # Double batch size, cap at 96
+    
     test_loader = DataLoader(
         test_dataset,
-        batch_size=config.BATCH_SIZE,
+        batch_size=fast_batch_size,
         shuffle=False,
         num_workers=config.NUM_WORKERS,
         pin_memory=config.PIN_MEMORY,
@@ -193,10 +196,31 @@ def main():
         persistent_workers=getattr(config, 'PERSISTENT_WORKERS', True) if config.NUM_WORKERS > 0 else False
     )
     
-    # Get TTA transforms
-    print("\nUsing Test Time Augmentation (TTA)...")
-    tta_transforms = get_tta_transforms(config.IMG_SIZE)
-    print(f"TTA transforms: {len(tta_transforms)}")
+    # Use fast TTA (5 transforms instead of 15 for ~3x speedup)
+    print("\nUsing Fast Test Time Augmentation (TTA) - 5 transforms...")
+    import albumentations as A
+    from albumentations.pytorch import ToTensorV2
+    
+    base_transform = [
+        A.LongestMaxSize(max_size=config.IMG_SIZE, interpolation=1, p=1.0),
+        A.PadIfNeeded(min_height=config.IMG_SIZE, min_width=config.IMG_SIZE, 
+                     border_mode=0, value=0, mask_value=0, p=1.0),
+    ]
+    normalize = [
+        A.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ToTensorV2()
+    ]
+    
+    # Fast TTA: 5 essential transforms (original, h-flip, v-flip, rotate90, transpose)
+    tta_transforms = [
+        A.Compose(base_transform + normalize),  # 1. Original
+        A.Compose(base_transform + [A.HorizontalFlip(p=1.0)] + normalize),  # 2. H-flip
+        A.Compose(base_transform + [A.VerticalFlip(p=1.0)] + normalize),  # 3. V-flip
+        A.Compose(base_transform + [A.RandomRotate90(p=1.0)] + normalize),  # 4. Rotate 90
+        A.Compose(base_transform + [A.Transpose(p=1.0)] + normalize),  # 5. Transpose
+    ]
+    print(f"TTA transforms: {len(tta_transforms)} (Fast mode - ~3x faster than 15 transforms)")
+    print(f"Batch size: {fast_batch_size} (increased for faster processing)")
     
     # Make predictions
     print("\n" + "="*70)
