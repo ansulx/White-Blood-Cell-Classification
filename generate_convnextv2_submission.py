@@ -28,7 +28,27 @@ from PIL import Image
 
 def load_model(model_path, device='cuda'):
     """Load trained model"""
-    checkpoint = torch.load(model_path, map_location=device)
+    # Check file exists and is readable
+    model_path = Path(model_path)
+    if not model_path.exists():
+        raise FileNotFoundError(f"Model file not found: {model_path}")
+    
+    # Check file size (models should be > 100MB typically)
+    file_size_mb = model_path.stat().st_size / (1024 * 1024)
+    if file_size_mb < 10:
+        raise ValueError(f"Model file seems too small ({file_size_mb:.1f}MB): {model_path}. File may be corrupted or incomplete.")
+    
+    try:
+        checkpoint = torch.load(model_path, map_location=device)
+    except RuntimeError as e:
+        if "central directory" in str(e) or "zip archive" in str(e):
+            raise RuntimeError(
+                f"Model file is corrupted or incomplete: {model_path}\n"
+                f"File size: {file_size_mb:.1f}MB\n"
+                f"Please re-copy this file from the source. The file transfer may have been interrupted."
+            ) from e
+        raise
+    
     class_to_idx = checkpoint['class_to_idx']
     idx_to_class = checkpoint['idx_to_class']
     num_classes = len(class_to_idx)
@@ -134,8 +154,9 @@ def main():
     for fold in range(5):
         model_path = config.MODEL_DIR / f'convnextv2_large_fold{fold}_best.pth'
         if model_path.exists():
+            file_size_mb = model_path.stat().st_size / (1024 * 1024)
+            print(f"  Found: {model_path.name} ({file_size_mb:.1f}MB)")
             model_paths.append(model_path)
-            print(f"  Found: {model_path.name}")
         else:
             print(f"  Warning: {model_path.name} not found")
     
