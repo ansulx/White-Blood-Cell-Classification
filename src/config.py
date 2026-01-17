@@ -127,7 +127,7 @@ class Config:
     # Strategy: V2 Large (strongest ConvNeXt) + Swin V2 Large (best transformer) + MaxViT XLarge (best multi-axis)
     # FIXED: Swin V2 window size optimized for 512 image size
     ENSEMBLE_MODELS = [
-        'convnextv2_large',                    # BEST ConvNeXt V2 - strongest CNN architecture
+#         'convnextv2_large',                    # BEST ConvNeXt V2 - strongest CNN architecture
         'swinv2_large_window12to16_192to256', # FIXED: Better window size for 512 images (was window12to24)
         'maxvit_xlarge_tf_384',               # BEST MaxViT - XLarge variant (maximum performance)
     ]

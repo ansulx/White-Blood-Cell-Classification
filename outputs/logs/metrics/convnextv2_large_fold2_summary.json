@@ -1,0 +1,28 @@
+{
+  "fold": 2,
+  "model_name": "convnextv2_large",
+  "best_val_macro_f1": 0.7586111481456667,
+  "best_val_acc": 93.5383417672246,
+  "bl_performance": {
+    "f1": 0.92018779342723,
+    "precision": 0.9262759924385633,
+    "recall": 0.914179104477612
+  },
+  "total_epochs": 44,
+  "final_train_loss": 0.524142173068652,
+  "final_train_acc": 83.9885818087453,
+  "final_val_loss": 1.9988118434740492,
+  "final_val_acc": 93.71999480991306,
+  "final_val_macro_f1": 0.7389569915703572,
+  "best_epoch": 34,
+  "config": {
+    "batch_size": 64,
+    "learning_rate": 5e-05,
+    "weight_decay": 0.0005,
+    "img_size": 512,
+    "num_epochs": 50,
+    "label_smoothing": 0.1,
+    "use_mixup": true,
+    "use_cutmix": true
+  }
+}
