@@ -227,18 +227,34 @@ def main():
     # Load eval data for optimization
     eval_df_full = pd.read_csv(config.PHASE2_EVAL_CSV)
     
-    # Use 50% stratified sample for faster optimization (method comparison doesn't need full data)
-    # This reduces optimization time by ~50% while maintaining accuracy in method selection
+    # Use 50% sample for faster optimization (method comparison doesn't need full data)
+    # Check if stratified split is possible (requires at least 2 samples per class)
     from sklearn.model_selection import train_test_split
-    eval_df, _ = train_test_split(
-        eval_df_full, 
-        test_size=0.5, 
-        stratify=eval_df_full['labels'], 
-        random_state=42
-    )
-    eval_labels = eval_df['labels'].values.tolist()
+    class_counts = eval_df_full['labels'].value_counts()
+    min_class_count = class_counts.min()
     
-    print(f"Using {len(eval_df)}/{len(eval_df_full)} eval samples (50% stratified subset) for fast optimization")
+    if min_class_count >= 2:
+        # Stratified split is safe
+        eval_df, _ = train_test_split(
+            eval_df_full, 
+            test_size=0.5, 
+            stratify=eval_df_full['labels'], 
+            random_state=42
+        )
+        print(f"Using {len(eval_df)}/{len(eval_df_full)} eval samples (50% stratified subset) for fast optimization")
+    else:
+        # Some classes have < 2 samples, use regular random split
+        rare_classes = class_counts[class_counts < 2].index.tolist()
+        print(f"Warning: Some classes have < 2 samples ({rare_classes}), using random split instead of stratified")
+        eval_df, _ = train_test_split(
+            eval_df_full, 
+            test_size=0.5, 
+            shuffle=True,
+            random_state=42
+        )
+        print(f"Using {len(eval_df)}/{len(eval_df_full)} eval samples (50% random subset) for fast optimization")
+    
+    eval_labels = eval_df['labels'].values.tolist()
     print(f"This reduces optimization time by ~50% while maintaining method selection accuracy")
     
     # Create temporary CSV for subset (WBCDataset requires CSV)
