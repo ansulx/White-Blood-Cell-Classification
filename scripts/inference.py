@@ -145,30 +145,12 @@ def predict_ensemble(model_paths, dataloader, device, tta=False, tta_transforms=
     """Make predictions with ensemble of models"""
     models = []
     idx_to_class_list = []
-    model_img_sizes = []  # Store image size for each model
     
     print(f"Loading {len(model_paths)} models...")
-    config = Config()
     for model_path in model_paths:
         model, idx_to_class = load_model(model_path, device)
         models.append(model)
         idx_to_class_list.append(idx_to_class)
-        
-        # Get model-specific image size
-        model_name = None
-        if 'maxvit_xlarge_tf_384' in str(model_path):
-            model_name = 'maxvit_xlarge_tf_384'
-        elif 'swinv2_large_window12to16_192to256' in str(model_path):
-            model_name = 'swinv2_large_window12to16_192to256'
-        elif 'convnextv2_large' in str(model_path):
-            model_name = 'convnextv2_large'
-        
-        # Get image size from MODEL_SPECIFIC_SETTINGS or use default
-        if model_name and model_name in config.MODEL_SPECIFIC_SETTINGS:
-            img_size = config.MODEL_SPECIFIC_SETTINGS[model_name].get('img_size', config.IMG_SIZE)
-        else:
-            img_size = config.IMG_SIZE
-        model_img_sizes.append(img_size)
     
     # Verify all models have same classes
     assert all(
@@ -178,9 +160,6 @@ def predict_ensemble(model_paths, dataloader, device, tta=False, tta_transforms=
     
     all_ensemble_probs = []
     all_names = []
-    
-    # Import transforms for resizing
-    from torchvision import transforms
     
     with torch.no_grad():
         for batch in tqdm(dataloader, desc='Ensemble Predicting'):
@@ -192,22 +171,12 @@ def predict_ensemble(model_paths, dataloader, device, tta=False, tta_transforms=
             images = images.to(device)
             model_probs = []
             
-            for model_idx, model in enumerate(models):
-                model_img_size = model_img_sizes[model_idx]
-                dataloader_img_size = images.shape[-1]  # Assume square images
-                
-                # Resize images if model needs different size
-                if model_img_size != dataloader_img_size:
-                    resize_transform = transforms.Resize((model_img_size, model_img_size), antialias=True)
-                    model_images = resize_transform(images)
-                else:
-                    model_images = images
-                
+            for model in models:
                 if tta and tta_transforms:
                     tta_preds = []
                     for tta_transform in tta_transforms:
                         tta_images = []
-                        for img in model_images:
+                        for img in images:
                             img_np = img.cpu().permute(1, 2, 0).numpy()
                             img_np = (img_np * np.array([0.229, 0.224, 0.225]) + np.array([0.485, 0.456, 0.406])) * 255
                             img_np = img_np.astype(np.uint8)
@@ -221,7 +190,7 @@ def predict_ensemble(model_paths, dataloader, device, tta=False, tta_transforms=
                     
                     avg_probs = torch.stack(tta_preds).mean(0)
                 else:
-                    outputs = model(model_images)
+                    outputs = model(images)
                     avg_probs = F.softmax(outputs, dim=1)
                 
                 model_probs.append(avg_probs.cpu().numpy())
@@ -235,21 +204,6 @@ def predict_ensemble(model_paths, dataloader, device, tta=False, tta_transforms=
     all_preds = np.argmax(all_ensemble_probs, axis=1)
     
     return all_preds, all_ensemble_probs, all_names, idx_to_class_list[0]
-
-def _get_model_img_size(model_path, config):
-    """Get image size for a model from its path"""
-    if 'maxvit_xlarge_tf_384' in str(model_path):
-        model_name = 'maxvit_xlarge_tf_384'
-    elif 'swinv2_large_window12to16_192to256' in str(model_path):
-        model_name = 'swinv2_large_window12to16_192to256'
-    elif 'convnextv2_large' in str(model_path):
-        model_name = 'convnextv2_large'
-    else:
-        return config.IMG_SIZE
-    
-    if model_name in config.MODEL_SPECIFIC_SETTINGS:
-        return config.MODEL_SPECIFIC_SETTINGS[model_name].get('img_size', config.IMG_SIZE)
-    return config.IMG_SIZE
 
 def predict_ensemble_classy(model_paths, dataloader, device, tta=False, tta_transforms=None, 
                           eval_labels=None, class_names=None):
@@ -272,15 +226,12 @@ def predict_ensemble_classy(model_paths, dataloader, device, tta=False, tta_tran
     
     models = []
     idx_to_class_list = []
-    model_img_sizes = []
-    config = Config()
     
     print(f"Loading {len(model_paths)} models for Classy Ensemble...")
     for model_path in model_paths:
         model, idx_to_class = load_model(model_path, device)
         models.append(model)
         idx_to_class_list.append(idx_to_class)
-        model_img_sizes.append(_get_model_img_size(model_path, config))
     
     # Verify all models have same classes
     assert all(
@@ -299,16 +250,11 @@ def predict_ensemble_classy(model_paths, dataloader, device, tta=False, tta_tran
         all_model_preds = []
         all_model_probs = []
         
-        from torchvision import transforms
-        
         with torch.no_grad():
-            for model_idx, model in enumerate(models):
+            for model in models:
                 model_preds = []
                 model_probs = []
-                model_img_size = model_img_sizes[model_idx]
-                dataloader_img_size = None
-                
-                for batch in tqdm(dataloader, desc=f'Evaluating model {model_idx+1}/{len(models)}'):
+                for batch in tqdm(dataloader, desc=f'Evaluating model {models.index(model)+1}/{len(models)}'):
                     if len(batch) == 2:
                         images, names = batch
                     else:
@@ -316,20 +262,11 @@ def predict_ensemble_classy(model_paths, dataloader, device, tta=False, tta_tran
                     
                     images = images.to(device)
                     
-                    # Resize images if model needs different size
-                    if dataloader_img_size is None:
-                        dataloader_img_size = images.shape[-1]
-                    if model_img_size != dataloader_img_size:
-                        resize_transform = transforms.Resize((model_img_size, model_img_size), antialias=True)
-                        model_images = resize_transform(images)
-                    else:
-                        model_images = images
-                    
                     if tta and tta_transforms:
                         tta_preds = []
                         for tta_transform in tta_transforms:
                             tta_images = []
-                            for img in model_images:
+                            for img in images:
                                 img_np = img.cpu().permute(1, 2, 0).numpy()
                                 img_np = (img_np * np.array([0.229, 0.224, 0.225]) + np.array([0.485, 0.456, 0.406])) * 255
                                 img_np = img_np.astype(np.uint8)
@@ -341,7 +278,7 @@ def predict_ensemble_classy(model_paths, dataloader, device, tta=False, tta_tran
                             tta_preds.append(probs)
                         avg_probs = torch.stack(tta_preds).mean(0)
                     else:
-                        outputs = model(model_images)
+                        outputs = model(images)
                         avg_probs = F.softmax(outputs, dim=1)
                     
                     preds = torch.argmax(avg_probs, dim=1)
@@ -390,24 +327,13 @@ def predict_ensemble_classy(model_paths, dataloader, device, tta=False, tta_tran
             
             images = images.to(device)
             model_probs_list = []
-            dataloader_img_size = images.shape[-1]
-            from torchvision import transforms
             
             for model_idx, model in enumerate(models):
-                model_img_size = model_img_sizes[model_idx]
-                
-                # Resize images if model needs different size
-                if model_img_size != dataloader_img_size:
-                    resize_transform = transforms.Resize((model_img_size, model_img_size), antialias=True)
-                    model_images = resize_transform(images)
-                else:
-                    model_images = images
-                
                 if tta and tta_transforms:
                     tta_preds = []
                     for tta_transform in tta_transforms:
                         tta_images = []
-                        for img in model_images:
+                        for img in images:
                             img_np = img.cpu().permute(1, 2, 0).numpy()
                             img_np = (img_np * np.array([0.229, 0.224, 0.225]) + np.array([0.485, 0.456, 0.406])) * 255
                             img_np = img_np.astype(np.uint8)
@@ -419,7 +345,7 @@ def predict_ensemble_classy(model_paths, dataloader, device, tta=False, tta_tran
                         tta_preds.append(probs)
                     avg_probs = torch.stack(tta_preds).mean(0)
                 else:
-                    outputs = model(model_images)
+                    outputs = model(images)
                     avg_probs = F.softmax(outputs, dim=1)
                 
                 model_probs_list.append(avg_probs.cpu().numpy())
@@ -463,7 +389,8 @@ def predict_ensemble_optimized(
     Returns:
         predictions, probabilities, names, idx_to_class
     """
-    if weights == 'classy':
+    # Check if weights is string 'classy' before comparing (avoid numpy array comparison error)
+    if isinstance(weights, str) and weights == 'classy':
         # Use Classy Ensemble (needs eval_labels for weight computation)
         # For test set, use regular ensemble with equal weights
         return predict_ensemble(
@@ -473,14 +400,11 @@ def predict_ensemble_optimized(
     # Use weighted ensemble
     models = []
     idx_to_class_list = []
-    model_img_sizes = []
-    config = Config()
     
     for model_path in model_paths:
         model, idx_to_class = load_model(model_path, device)
         models.append(model)
         idx_to_class_list.append(idx_to_class)
-        model_img_sizes.append(_get_model_img_size(model_path, config))
     
     idx_to_class = idx_to_class_list[0]
     all_ensemble_probs = []
@@ -498,24 +422,13 @@ def predict_ensemble_optimized(
             
             images = images.to(device)
             model_probs_list = []
-            dataloader_img_size = images.shape[-1]
-            from torchvision import transforms
             
-            for model_idx, model in enumerate(models):
-                model_img_size = model_img_sizes[model_idx]
-                
-                # Resize images if model needs different size
-                if model_img_size != dataloader_img_size:
-                    resize_transform = transforms.Resize((model_img_size, model_img_size), antialias=True)
-                    model_images = resize_transform(images)
-                else:
-                    model_images = images
-                
+            for model in models:
                 if tta and tta_transforms:
                     tta_preds = []
                     for tta_transform in tta_transforms:
                         tta_images = []
-                        for img in model_images:
+                        for img in images:
                             img_np = img.cpu().permute(1, 2, 0).numpy()
                             img_np = (img_np * np.array([0.229, 0.224, 0.225]) + np.array([0.485, 0.456, 0.406])) * 255
                             img_np = img_np.astype(np.uint8)
@@ -527,7 +440,7 @@ def predict_ensemble_optimized(
                         tta_preds.append(probs)
                     avg_probs = torch.stack(tta_preds).mean(0)
                 else:
-                    outputs = model(model_images)
+                    outputs = model(images)
                     avg_probs = F.softmax(outputs, dim=1)
                 
                 model_probs_list.append(avg_probs.cpu().numpy())
