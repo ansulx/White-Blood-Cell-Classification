@@ -692,6 +692,20 @@ def train_fold(fold, train_df, val_df, config):
                 print(f"  {cls}: {class_weights[cls]:.4f}")
 
     train_sampler = None
+    loader_kwargs = {
+        'num_workers': config.NUM_WORKERS,
+        'pin_memory': config.PIN_MEMORY,
+    }
+    if config.NUM_WORKERS > 0:
+        loader_kwargs['prefetch_factor'] = getattr(config, 'PREFETCH_FACTOR', 4)
+        loader_kwargs['persistent_workers'] = (
+            getattr(config, 'PERSISTENT_WORKERS', True) if not distributed else False
+        )
+        if distributed:
+            loader_kwargs['timeout'] = 600
+            if main_process:
+                print("DDP: persistent_workers disabled and timeout set to avoid worker hangs.")
+
     if distributed:
         if config.USE_CLASS_WEIGHTS and main_process:
             print("Distributed training: WeightedRandomSampler is disabled; using class weights in loss only.")
@@ -705,10 +719,7 @@ def train_fold(fold, train_df, val_df, config):
             train_dataset,
             batch_size=config.BATCH_SIZE,
             sampler=train_sampler,
-            num_workers=config.NUM_WORKERS,
-            pin_memory=config.PIN_MEMORY,
-            prefetch_factor=getattr(config, 'PREFETCH_FACTOR', 4),
-            persistent_workers=getattr(config, 'PERSISTENT_WORKERS', True) if config.NUM_WORKERS > 0 else False
+            **loader_kwargs
         )
     else:
         if config.USE_CLASS_WEIGHTS:
@@ -718,20 +729,14 @@ def train_fold(fold, train_df, val_df, config):
                 train_dataset,
                 batch_size=config.BATCH_SIZE,
                 sampler=sampler,
-                num_workers=config.NUM_WORKERS,
-                pin_memory=config.PIN_MEMORY,
-                prefetch_factor=getattr(config, 'PREFETCH_FACTOR', 4),
-                persistent_workers=getattr(config, 'PERSISTENT_WORKERS', True) if config.NUM_WORKERS > 0 else False
+                **loader_kwargs
             )
         else:
             train_loader = DataLoader(
                 train_dataset,
                 batch_size=config.BATCH_SIZE,
                 shuffle=True,
-                num_workers=config.NUM_WORKERS,
-                pin_memory=config.PIN_MEMORY,
-                prefetch_factor=getattr(config, 'PREFETCH_FACTOR', 4),
-                persistent_workers=getattr(config, 'PERSISTENT_WORKERS', True) if config.NUM_WORKERS > 0 else False
+                **loader_kwargs
             )
     
     val_loader = None
@@ -740,10 +745,7 @@ def train_fold(fold, train_df, val_df, config):
             val_dataset,
             batch_size=config.BATCH_SIZE,
             shuffle=False,
-            num_workers=config.NUM_WORKERS,
-            pin_memory=config.PIN_MEMORY,
-            prefetch_factor=getattr(config, 'PREFETCH_FACTOR', 4),
-            persistent_workers=getattr(config, 'PERSISTENT_WORKERS', True) if config.NUM_WORKERS > 0 else False
+            **loader_kwargs
         )
     
     # Create model with moderate regularization (reduced to improve validation)
