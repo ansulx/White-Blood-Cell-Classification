@@ -929,6 +929,15 @@ def train_all_ensemble_models(config):
         
         # Update model name
         config.MODEL_NAME = model_name
+
+        # Skip model entirely if all folds already exist
+        existing_folds = [
+            fold for fold in range(config.N_FOLDS)
+            if (config.MODEL_DIR / f'{model_name}_fold{fold}_best.pth').exists()
+        ]
+        if len(existing_folds) == config.N_FOLDS:
+            print(f"All {config.N_FOLDS} folds already exist for {model_name}. Skipping training.")
+            continue
         
         # Apply model-specific settings if available
         if model_name in config.MODEL_SPECIFIC_SETTINGS:
@@ -1040,13 +1049,55 @@ def train_single_model(config):
         random_state=config.RANDOM_SEED
     )
     
+    # Skip folds that already have saved checkpoints
+    existing_folds = set()
+    for fold in range(config.N_FOLDS):
+        model_path = config.MODEL_DIR / f'{config.MODEL_NAME}_fold{fold}_best.pth'
+        if model_path.exists():
+            existing_folds.add(fold)
+    if existing_folds:
+        print(f"Found existing checkpoints for folds: {sorted(existing_folds)}")
+        print("These folds will be skipped and not retrained.")
+
     fold_scores = []
     fold_details = []
     
     for fold, (train_idx, val_idx) in enumerate(skf.split(all_train, all_train['labels'])):
         train_df = all_train.iloc[train_idx].reset_index(drop=True)
         val_df = all_train.iloc[val_idx].reset_index(drop=True)
-        
+
+        # Skip fold if checkpoint already exists
+        if fold in existing_folds:
+            summary_path = config.LOG_DIR / 'metrics' / f'{config.MODEL_NAME}_fold{fold}_summary.json'
+            best_val_macro_f1 = None
+            best_val_acc = 0.0
+            summary_loaded = False
+            if summary_path.exists():
+                try:
+                    with open(summary_path) as f:
+                        summary = json.load(f)
+                    best_val_macro_f1 = summary.get('best_val_macro_f1')
+                    best_val_acc = summary.get('best_val_acc', 0.0) or 0.0
+                    summary_loaded = True
+                except Exception as e:
+                    print(f"Warning: Could not read summary for fold {fold}: {e}")
+            if best_val_macro_f1 is not None:
+                fold_scores.append(best_val_macro_f1)
+            fold_details.append({
+                'fold': fold,
+                'val_macro_f1': best_val_macro_f1,
+                'val_acc': best_val_acc,
+                'val_balanced_accuracy': None,
+                'val_macro_precision': None,
+                'val_macro_specificity': None,
+                'train_samples': len(train_df),
+                'val_samples': len(val_df),
+                'skipped': True,
+                'summary_loaded': summary_loaded
+            })
+            print(f"Skipping Fold {fold}: checkpoint already exists")
+            continue
+
         val_macro_f1, val_metrics = train_fold(fold, train_df, val_df, config)
         fold_scores.append(val_macro_f1)
         fold_details.append({
@@ -1057,7 +1108,8 @@ def train_single_model(config):
             'val_macro_precision': val_metrics.get('macro_precision', 0.0) if val_metrics else 0.0,
             'val_macro_specificity': val_metrics.get('macro_specificity', 0.0) if val_metrics else 0.0,
             'train_samples': len(train_df),
-            'val_samples': len(val_df)
+            'val_samples': len(val_df),
+            'skipped': False
         })
         # Print BL class performance if available
         bl_info = ""
@@ -1067,10 +1119,17 @@ def train_single_model(config):
         print(f"Fold {fold} - Macro-F1: {val_macro_f1:.4f} (Primary Metric){bl_info}")
     
     # Calculate final statistics
-    mean_acc = np.mean(fold_scores)
-    std_acc = np.std(fold_scores)
-    min_acc = np.min(fold_scores)
-    max_acc = np.max(fold_scores)
+    if fold_scores:
+        mean_acc = np.mean(fold_scores)
+        std_acc = np.std(fold_scores)
+        min_acc = np.min(fold_scores)
+        max_acc = np.max(fold_scores)
+    else:
+        mean_acc = 0.0
+        std_acc = 0.0
+        min_acc = 0.0
+        max_acc = 0.0
+        print("Warning: No folds were trained or loaded for this model.")
     
     print(f"\n{'='*60}")
     print(f"Cross-Validation Results (Primary Metric - Macro-F1):")
@@ -1079,10 +1138,13 @@ def train_single_model(config):
     print(f"Max Macro-F1: {max_acc:.4f}")
     print(f"{'='*60}")
     
-    # Calculate tie-breaking metrics
-    mean_balanced_acc = np.mean([f['val_balanced_accuracy'] for f in fold_details])
-    mean_macro_prec = np.mean([f['val_macro_precision'] for f in fold_details])
-    mean_macro_spec = np.mean([f['val_macro_specificity'] for f in fold_details])
+    # Calculate tie-breaking metrics (exclude folds with missing metrics)
+    balanced_values = [f['val_balanced_accuracy'] for f in fold_details if f.get('val_balanced_accuracy') is not None]
+    macro_prec_values = [f['val_macro_precision'] for f in fold_details if f.get('val_macro_precision') is not None]
+    macro_spec_values = [f['val_macro_specificity'] for f in fold_details if f.get('val_macro_specificity') is not None]
+    mean_balanced_acc = float(np.mean(balanced_values)) if balanced_values else 0.0
+    mean_macro_prec = float(np.mean(macro_prec_values)) if macro_prec_values else 0.0
+    mean_macro_spec = float(np.mean(macro_spec_values)) if macro_spec_values else 0.0
     
     print(f"\nTie-Breaking Metrics:")
     print(f"Mean Balanced Accuracy: {mean_balanced_acc:.4f}")
@@ -1103,6 +1165,7 @@ def train_single_model(config):
         'mean_macro_precision': float(mean_macro_prec),
         'mean_macro_specificity': float(mean_macro_spec),
         'fold_details': fold_details,
+        'skipped_folds': [f['fold'] for f in fold_details if f.get('skipped')],
         'config': {
             'batch_size': config.BATCH_SIZE,
             'learning_rate': config.LEARNING_RATE,
