@@ -885,9 +885,17 @@ def train_fold(fold, train_df, val_df, config):
     for epoch in range(config.NUM_EPOCHS):
         if main_process:
             print(f"\nEpoch {epoch+1}/{config.NUM_EPOCHS}")
-        
+
+        # Keep all ranks in sync before reshuffling
+        if distributed:
+            dist.barrier()
+
         if train_sampler is not None:
             train_sampler.set_epoch(epoch)
+
+        # Ensure sampler state is aligned across ranks
+        if distributed:
+            dist.barrier()
         
         # Gradient clipping value
         grad_clip = config.GRADIENT_CLIP_VALUE if config.USE_GRADIENT_CLIPPING else None
@@ -904,6 +912,10 @@ def train_fold(fold, train_df, val_df, config):
             config=config,
             is_main_process=main_process
         )
+
+        # Ensure all ranks finish training before validation
+        if distributed:
+            dist.barrier()
         
         # Get class names for metrics
         class_names = list(train_dataset.idx_to_class.values())
