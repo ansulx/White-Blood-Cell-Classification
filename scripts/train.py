@@ -6,8 +6,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+import torch.distributed as dist
 from torch.cuda.amp import autocast, GradScaler
+from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, WeightedRandomSampler
+from torch.utils.data.distributed import DistributedSampler
 from torch.optim.lr_scheduler import CosineAnnealingLR, ReduceLROnPlateau, LambdaLR
 import pandas as pd
 import numpy as np
@@ -35,6 +38,20 @@ from src.models import get_model, get_loss_fn
 from src.metrics import compute_all_metrics, print_classification_report
 from sklearn.model_selection import StratifiedKFold
 from sklearn.utils.class_weight import compute_class_weight
+
+def init_distributed_mode():
+    """Initialize torch.distributed if launched with torchrun."""
+    if "RANK" in os.environ and "WORLD_SIZE" in os.environ:
+        rank = int(os.environ["RANK"])
+        world_size = int(os.environ["WORLD_SIZE"])
+        local_rank = int(os.environ.get("LOCAL_RANK", 0))
+        dist.init_process_group(backend="nccl", init_method="env://")
+        torch.cuda.set_device(local_rank)
+        return True, rank, world_size, local_rank
+    return False, 0, 1, 0
+
+def is_main_process():
+    return not dist.is_available() or not dist.is_initialized() or dist.get_rank() == 0
 
 def compute_class_weights(labels, method='balanced', power=1.0):
     """
@@ -127,14 +144,15 @@ def mixup_criterion(criterion, pred, y_a, y_b, lam):
 
 def train_epoch(model, dataloader, criterion, optimizer, device, scheduler=None, 
                 gradient_clip_value=None, use_mixup=False, mixup_alpha=0.4,
-                use_cutmix=False, cutmix_alpha=1.0, use_amp=False, scaler=None, config=None):
+                use_cutmix=False, cutmix_alpha=1.0, use_amp=False, scaler=None, config=None,
+                is_main_process=True):
     """Train for one epoch with mixed precision support"""
     model.train()
     running_loss = 0.0
     correct = 0
     total = 0
     
-    pbar = tqdm(dataloader, desc='Training')
+    pbar = tqdm(dataloader, desc='Training', disable=not is_main_process)
     for images, labels, _ in pbar:
         images = images.to(device, non_blocking=True)  # Non-blocking transfer
         labels = labels.to(device, non_blocking=True)
@@ -185,7 +203,7 @@ def train_epoch(model, dataloader, criterion, optimizer, device, scheduler=None,
     epoch_acc = 100 * correct / total
     return epoch_loss, epoch_acc
 
-def validate(model, dataloader, criterion, device, class_names=None, use_amp=False):
+def validate(model, dataloader, criterion, device, class_names=None, use_amp=False, is_main_process=True):
     """Validate model and compute competition metrics"""
     model.eval()
     running_loss = 0.0
@@ -196,7 +214,7 @@ def validate(model, dataloader, criterion, device, class_names=None, use_amp=Fal
     all_probs = []  # Store probabilities for debugging
     
     with torch.no_grad():
-        for images, labels, _ in tqdm(dataloader, desc='Validating'):
+        for images, labels, _ in tqdm(dataloader, desc='Validating', disable=not is_main_process):
             images = images.to(device, non_blocking=True)
             labels = labels.to(device, non_blocking=True)
             
@@ -438,6 +456,9 @@ def train_fold(fold, train_df, val_df, config):
     print(f"\n{'='*60}")
     print(f"Training Fold {fold}")
     print(f"{'='*60}")
+
+    distributed = getattr(config, 'DISTRIBUTED', False)
+    main_process = is_main_process()
     
     # Determine image directory based on split
     # Check if images are in phase1, phase2/train, or phase2/eval
@@ -627,23 +648,24 @@ def train_fold(fold, train_df, val_df, config):
             raise ValueError("Validation set contains classes not in training set!")
     
     # Debug: Print label mapping verification
-    print(f"\nLabel Mapping Verification:")
-    print(f"  Train classes: {len(train_dataset.unique_classes)} classes")
-    print(f"  Val classes: {len(val_dataset.unique_classes)} classes")
-    print(f"  Class mapping: {train_dataset.class_to_idx}")
-    
-    # Verify a few samples
-    print(f"\nSample Verification (first 3 train samples):")
-    for i in range(min(3, len(train_dataset))):
-        _, label_idx, img_name = train_dataset[i]
-        label_name = train_dataset.idx_to_class[label_idx]
-        print(f"  {img_name}: label_idx={label_idx}, label_name={label_name}")
-    
-    print(f"\nSample Verification (first 3 val samples):")
-    for i in range(min(3, len(val_dataset))):
-        _, label_idx, img_name = val_dataset[i]
-        label_name = val_dataset.idx_to_class[label_idx]
-        print(f"  {img_name}: label_idx={label_idx}, label_name={label_name}")
+    if main_process:
+        print(f"\nLabel Mapping Verification:")
+        print(f"  Train classes: {len(train_dataset.unique_classes)} classes")
+        print(f"  Val classes: {len(val_dataset.unique_classes)} classes")
+        print(f"  Class mapping: {train_dataset.class_to_idx}")
+        
+        # Verify a few samples
+        print(f"\nSample Verification (first 3 train samples):")
+        for i in range(min(3, len(train_dataset))):
+            _, label_idx, img_name = train_dataset[i]
+            label_name = train_dataset.idx_to_class[label_idx]
+            print(f"  {img_name}: label_idx={label_idx}, label_name={label_name}")
+        
+        print(f"\nSample Verification (first 3 val samples):")
+        for i in range(min(3, len(val_dataset))):
+            _, label_idx, img_name = val_dataset[i]
+            label_name = val_dataset.idx_to_class[label_idx]
+            print(f"  {img_name}: label_idx={label_idx}, label_name={label_name}")
     
     # Compute class weights with moderate weighting for rare classes
     if config.USE_CLASS_WEIGHTS:
@@ -652,40 +674,65 @@ def train_fold(fold, train_df, val_df, config):
             method='balanced',
             power=1.0  # Reduced from 1.5 - extreme weights causing instability
         )
-        print(f"\nClass Weights (for imbalanced handling):")
-        for cls in sorted(class_weights.keys()):
-            print(f"  {cls}: {class_weights[cls]:.4f}")
-        weights = [class_weights[label] for label in train_df['labels'].values]
-        sampler = WeightedRandomSampler(weights, len(weights), replacement=True)
+        if main_process:
+            print(f"\nClass Weights (for imbalanced handling):")
+            for cls in sorted(class_weights.keys()):
+                print(f"  {cls}: {class_weights[cls]:.4f}")
+
+    train_sampler = None
+    if distributed:
+        if config.USE_CLASS_WEIGHTS and main_process:
+            print("Distributed training: WeightedRandomSampler is disabled; using class weights in loss only.")
+        train_sampler = DistributedSampler(
+            train_dataset,
+            num_replicas=getattr(config, 'WORLD_SIZE', 1),
+            rank=getattr(config, 'RANK', 0),
+            shuffle=True
+        )
         train_loader = DataLoader(
             train_dataset,
             batch_size=config.BATCH_SIZE,
-            sampler=sampler,
+            sampler=train_sampler,
             num_workers=config.NUM_WORKERS,
             pin_memory=config.PIN_MEMORY,
             prefetch_factor=getattr(config, 'PREFETCH_FACTOR', 4),
             persistent_workers=getattr(config, 'PERSISTENT_WORKERS', True) if config.NUM_WORKERS > 0 else False
         )
     else:
-        train_loader = DataLoader(
-            train_dataset,
+        if config.USE_CLASS_WEIGHTS:
+            weights = [class_weights[label] for label in train_df['labels'].values]
+            sampler = WeightedRandomSampler(weights, len(weights), replacement=True)
+            train_loader = DataLoader(
+                train_dataset,
+                batch_size=config.BATCH_SIZE,
+                sampler=sampler,
+                num_workers=config.NUM_WORKERS,
+                pin_memory=config.PIN_MEMORY,
+                prefetch_factor=getattr(config, 'PREFETCH_FACTOR', 4),
+                persistent_workers=getattr(config, 'PERSISTENT_WORKERS', True) if config.NUM_WORKERS > 0 else False
+            )
+        else:
+            train_loader = DataLoader(
+                train_dataset,
+                batch_size=config.BATCH_SIZE,
+                shuffle=True,
+                num_workers=config.NUM_WORKERS,
+                pin_memory=config.PIN_MEMORY,
+                prefetch_factor=getattr(config, 'PREFETCH_FACTOR', 4),
+                persistent_workers=getattr(config, 'PERSISTENT_WORKERS', True) if config.NUM_WORKERS > 0 else False
+            )
+    
+    val_loader = None
+    if main_process:
+        val_loader = DataLoader(
+            val_dataset,
             batch_size=config.BATCH_SIZE,
-            shuffle=True,
+            shuffle=False,
             num_workers=config.NUM_WORKERS,
             pin_memory=config.PIN_MEMORY,
             prefetch_factor=getattr(config, 'PREFETCH_FACTOR', 4),
             persistent_workers=getattr(config, 'PERSISTENT_WORKERS', True) if config.NUM_WORKERS > 0 else False
         )
-    
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=config.BATCH_SIZE,
-        shuffle=False,
-        num_workers=config.NUM_WORKERS,
-        pin_memory=config.PIN_MEMORY,
-        prefetch_factor=getattr(config, 'PREFETCH_FACTOR', 4),
-        persistent_workers=getattr(config, 'PERSISTENT_WORKERS', True) if config.NUM_WORKERS > 0 else False
-    )
     
     # Create model with moderate regularization (reduced to improve validation)
     # Support model-specific drop_path_rate from MODEL_SPECIFIC_SETTINGS
@@ -714,10 +761,17 @@ def train_fold(fold, train_df, val_df, config):
             drop_rate=0.3,  # Reduced from 0.4
             drop_path_rate=drop_path
         ).to(config.DEVICE)
+
+    if distributed:
+        model = DDP(
+            model,
+            device_ids=[getattr(config, 'LOCAL_RANK', 0)],
+            output_device=getattr(config, 'LOCAL_RANK', 0)
+        )
     
     # Compile model for faster training (PyTorch 2.0+)
     # Skip compilation for MaxViT models (they have compatibility issues with torch.compile)
-    if config.USE_TORCH_COMPILE and hasattr(torch, 'compile'):
+    if config.USE_TORCH_COMPILE and hasattr(torch, 'compile') and not distributed:
         if 'maxvit' in config.MODEL_NAME.lower():
             print("Skipping torch.compile for MaxViT (compatibility issue)")
         else:
@@ -800,19 +854,25 @@ def train_fold(fold, train_df, val_df, config):
     best_val_metrics = None
     patience_counter = 0
     
-    # Track training history
-    history = {
-        'train_loss': [],
-        'train_acc': [],
-        'val_loss': [],
-        'val_acc': [],
-        'val_macro_f1': [],  # Primary competition metric
-        'learning_rate': [],
-        'epoch': []
-    }
+    # Track training history (main process only)
+    history = None
+    if main_process:
+        history = {
+            'train_loss': [],
+            'train_acc': [],
+            'val_loss': [],
+            'val_acc': [],
+            'val_macro_f1': [],  # Primary competition metric
+            'learning_rate': [],
+            'epoch': []
+        }
     
     for epoch in range(config.NUM_EPOCHS):
-        print(f"\nEpoch {epoch+1}/{config.NUM_EPOCHS}")
+        if main_process:
+            print(f"\nEpoch {epoch+1}/{config.NUM_EPOCHS}")
+        
+        if train_sampler is not None:
+            train_sampler.set_epoch(epoch)
         
         # Gradient clipping value
         grad_clip = config.GRADIENT_CLIP_VALUE if config.USE_GRADIENT_CLIPPING else None
@@ -826,16 +886,21 @@ def train_fold(fold, train_df, val_df, config):
             cutmix_alpha=config.CUTMIX_ALPHA,
             use_amp=config.USE_MIXED_PRECISION,
             scaler=scaler,
-            config=config
+            config=config,
+            is_main_process=main_process
         )
         
         # Get class names for metrics
         class_names = list(train_dataset.idx_to_class.values())
         
-        val_loss, val_acc, _, _, val_metrics = validate(
-            model, val_loader, criterion, config.DEVICE, 
-            class_names=class_names, use_amp=config.USE_MIXED_PRECISION
-        )
+        if main_process:
+            val_loss, val_acc, _, _, val_metrics = validate(
+                model, val_loader, criterion, config.DEVICE, 
+                class_names=class_names, use_amp=config.USE_MIXED_PRECISION,
+                is_main_process=main_process
+            )
+        else:
+            val_loss, val_acc, val_metrics = 0.0, 0.0, {'macro_f1': 0.0}
         
         # Step scheduler after each epoch
         if scheduler:
@@ -844,60 +909,73 @@ def train_fold(fold, train_df, val_df, config):
         current_lr = optimizer.param_groups[0]['lr']
         macro_f1 = val_metrics['macro_f1']
         
-        print(f"Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.2f}%")
-        print(f"Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.2f}%")
-        print(f"Val Macro-F1: {macro_f1:.4f} (Primary Metric)")
-        print(f"Learning Rate: {current_lr:.6f}")
+        if main_process:
+            print(f"Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.2f}%")
+            print(f"Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.2f}%")
+            print(f"Val Macro-F1: {macro_f1:.4f} (Primary Metric)")
+            print(f"Learning Rate: {current_lr:.6f}")
         
         # Track history
-        history['epoch'].append(epoch + 1)
-        history['train_loss'].append(train_loss)
-        history['train_acc'].append(train_acc)
-        history['val_loss'].append(val_loss)
-        history['val_acc'].append(val_acc)
-        history['val_macro_f1'].append(macro_f1)
-        history['learning_rate'].append(current_lr)
+        if history is not None:
+            history['epoch'].append(epoch + 1)
+            history['train_loss'].append(train_loss)
+            history['train_acc'].append(train_acc)
+            history['val_loss'].append(val_loss)
+            history['val_acc'].append(val_acc)
+            history['val_macro_f1'].append(macro_f1)
+            history['learning_rate'].append(current_lr)
         
         # Save best model based on Macro-F1 (primary metric)
-        if macro_f1 > best_val_macro_f1 + config.EARLY_STOPPING_MIN_DELTA:
-            best_val_macro_f1 = macro_f1
-            best_val_acc = val_acc  # Also track accuracy
-            best_val_metrics = val_metrics
-            patience_counter = 0
-            model_path = config.MODEL_DIR / f'{config.MODEL_NAME}_fold{fold}_best.pth'
-            
-            # CRITICAL: Extract BL class performance for monitoring
-            bl_performance = None
-            if val_metrics.get('per_class') and 'BL' in val_metrics['per_class']:
-                bl_performance = val_metrics['per_class']['BL']
-            
-            torch.save({
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'val_acc': val_acc,
-                'val_macro_f1': macro_f1,
-                'val_metrics': val_metrics,
-                'bl_performance': bl_performance,  # Track BL class specifically
-                'epoch': epoch,
-                'class_to_idx': train_dataset.class_to_idx,
-                'idx_to_class': train_dataset.idx_to_class,
-            }, model_path)
-            
-            # Print BL performance if available
-            bl_info = ""
-            if bl_performance:
-                bl_info = f" | BL F1: {bl_performance['f1']:.4f}"
-            print(f"✓ Saved best model - Val Acc: {val_acc:.2f}%, Macro-F1: {macro_f1:.4f}{bl_info}")
-        else:
-            patience_counter += 1
+        if main_process:
+            if macro_f1 > best_val_macro_f1 + config.EARLY_STOPPING_MIN_DELTA:
+                best_val_macro_f1 = macro_f1
+                best_val_acc = val_acc  # Also track accuracy
+                best_val_metrics = val_metrics
+                patience_counter = 0
+                model_path = config.MODEL_DIR / f'{config.MODEL_NAME}_fold{fold}_best.pth'
+                
+                # CRITICAL: Extract BL class performance for monitoring
+                bl_performance = None
+                if val_metrics.get('per_class') and 'BL' in val_metrics['per_class']:
+                    bl_performance = val_metrics['per_class']['BL']
+                
+                state_dict = model.module.state_dict() if isinstance(model, DDP) else model.state_dict()
+                torch.save({
+                    'model_state_dict': state_dict,
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    'val_acc': val_acc,
+                    'val_macro_f1': macro_f1,
+                    'val_metrics': val_metrics,
+                    'bl_performance': bl_performance,  # Track BL class specifically
+                    'epoch': epoch,
+                    'class_to_idx': train_dataset.class_to_idx,
+                    'idx_to_class': train_dataset.idx_to_class,
+                }, model_path)
+                
+                # Print BL performance if available
+                bl_info = ""
+                if bl_performance:
+                    bl_info = f" | BL F1: {bl_performance['f1']:.4f}"
+                print(f"✓ Saved best model - Val Acc: {val_acc:.2f}%, Macro-F1: {macro_f1:.4f}{bl_info}")
+            else:
+                patience_counter += 1
         
-        # Early stopping
-        if patience_counter >= config.EARLY_STOPPING_PATIENCE:
+        # Early stopping (broadcast to all ranks)
+        stop_training = 0
+        if main_process and patience_counter >= config.EARLY_STOPPING_PATIENCE:
             print(f"Early stopping at epoch {epoch+1}")
+            stop_training = 1
+        if distributed:
+            stop_tensor = torch.tensor(stop_training, device=config.DEVICE)
+            dist.broadcast(stop_tensor, src=0)
+            if stop_tensor.item() == 1:
+                break
+        elif stop_training == 1:
             break
     
     # Save training history and plots
-    save_training_results(fold, history, config, best_val_macro_f1, best_val_metrics)
+    if main_process and history is not None:
+        save_training_results(fold, history, config, best_val_macro_f1, best_val_metrics)
     
     return best_val_macro_f1, best_val_metrics
 
@@ -1118,7 +1196,10 @@ def train_single_model(config):
             bl_info = f" | BL F1: {bl_f1:.4f}"
         print(f"Fold {fold} - Macro-F1: {val_macro_f1:.4f} (Primary Metric){bl_info}")
     
-    # Calculate final statistics
+    # Calculate final statistics (main process only)
+    if not is_main_process():
+        return 0.0, None
+
     if fold_scores:
         mean_acc = np.mean(fold_scores)
         std_acc = np.std(fold_scores)
@@ -1220,21 +1301,33 @@ def train_single_model(config):
 def main():
     """Main training function - Integrated Session 1 & 2 workflow"""
     config = Config()
+
+    distributed, rank, world_size, local_rank = init_distributed_mode()
+    config.DISTRIBUTED = distributed
+    config.RANK = rank
+    config.WORLD_SIZE = world_size
+    config.LOCAL_RANK = local_rank
+    if distributed:
+        config.DEVICE = f'cuda:{local_rank}'
+    else:
+        config.DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
+    main_process = is_main_process()
     
     # Check if we should train all ensemble models automatically
     if config.TRAIN_ALL_ENSEMBLE:
-        print("\n" + "="*60)
-        print("AUTO-TRAIN MODE ENABLED - SESSION 1")
-        print("="*60)
-        print("Will train all ensemble models sequentially with optimized settings.")
-        print("No need to manually change config between models!")
-        print("="*60)
+        if main_process:
+            print("\n" + "="*60)
+            print("AUTO-TRAIN MODE ENABLED - SESSION 1")
+            print("="*60)
+            print("Will train all ensemble models sequentially with optimized settings.")
+            print("No need to manually change config between models!")
+            print("="*60)
         
         # Train all models (Session 1)
         all_results = train_all_ensemble_models(config)
         
         # Session 2: Pseudo-labeling and retraining
-        if config.RUN_PSEUDO_LABELING:
+        if config.RUN_PSEUDO_LABELING and main_process:
             print("\n" + "="*60)
             print("SESSION 2: PSEUDO-LABELING")
             print("="*60)
@@ -1341,7 +1434,7 @@ def main():
                 print("Continuing without pseudo-labels...")
         
         # Session 3: Final ensemble optimization and submission
-        if getattr(config, 'RUN_FINAL_SUBMISSION', False):
+        if getattr(config, 'RUN_FINAL_SUBMISSION', False) and main_process:
             print("\n" + "="*60)
             print("SESSION 3: FINAL SUBMISSION")
             print("="*60)
@@ -1418,6 +1511,10 @@ def main():
     else:
         # Original behavior: train single model
         train_single_model(config)
+
+    if distributed:
+        dist.barrier()
+        dist.destroy_process_group()
 
 if __name__ == '__main__':
     main()
