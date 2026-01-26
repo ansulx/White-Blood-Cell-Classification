@@ -901,6 +901,10 @@ def train_fold(fold, train_df, val_df, config):
             )
         else:
             val_loss, val_acc, val_metrics = 0.0, 0.0, {'macro_f1': 0.0}
+
+        # Ensure all ranks wait for validation before proceeding
+        if distributed:
+            dist.barrier()
         
         # Step scheduler after each epoch
         if scheduler:
@@ -968,9 +972,8 @@ def train_fold(fold, train_df, val_df, config):
         if distributed:
             stop_tensor = torch.tensor(stop_training, device=config.DEVICE)
             dist.broadcast(stop_tensor, src=0)
-            if stop_tensor.item() == 1:
-                break
-        elif stop_training == 1:
+            stop_training = int(stop_tensor.item())
+        if stop_training == 1:
             break
     
     # Save training history and plots

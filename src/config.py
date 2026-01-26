@@ -73,6 +73,7 @@ class Config:
             'learning_rate': 4e-5,
             'batch_size': 48,
             'drop_path_rate': 0.2,  # Can be optimized via hyperparameter_opt.py
+            'img_size': 256,  # Swin V2 Large expects 256x256 inputs
         },
         'maxvit_xlarge_tf_384': {
             'learning_rate': 3e-5,
