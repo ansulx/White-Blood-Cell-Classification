@@ -53,6 +53,18 @@ def init_distributed_mode():
 def is_main_process():
     return not dist.is_available() or not dist.is_initialized() or dist.get_rank() == 0
 
+def is_checkpoint_valid(model_path):
+    """Check if a checkpoint exists and can be loaded."""
+    if not model_path.exists():
+        return False
+    if model_path.stat().st_size == 0:
+        return False
+    try:
+        checkpoint = torch.load(model_path, map_location='cpu')
+        return isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint
+    except Exception:
+        return False
+
 def compute_class_weights(labels, method='balanced', power=1.0):
     """
     Compute class weights for imbalanced dataset with stronger weighting for rare classes
@@ -841,10 +853,11 @@ def train_fold(fold, train_df, val_df, config):
                 return min_lr_ratio + (1 - min_lr_ratio) * 0.5 * (1 + np.cos(np.pi * adjusted_progress))
         
         scheduler = LambdaLR(optimizer, lr_lambda)
-        print(f"\nLearning Rate Schedule:")
-        print(f"  Warmup epochs: {config.WARMUP_EPOCHS}")
-        print(f"  Initial LR: {config.LEARNING_RATE}")
-        print(f"  Schedule: Linear warmup → Slow Cosine annealing (for better validation)")
+        if is_main_process():
+            print(f"\nLearning Rate Schedule:")
+            print(f"  Warmup epochs: {config.WARMUP_EPOCHS}")
+            print(f"  Initial LR: {config.LEARNING_RATE}")
+            print(f"  Schedule: Linear warmup → Slow Cosine annealing (for better validation)")
     else:
         scheduler = CosineAnnealingLR(optimizer, T_max=config.NUM_EPOCHS, eta_min=1e-6)
     
@@ -987,13 +1000,19 @@ def train_all_ensemble_models(config):
     Train all ensemble models sequentially with optimized settings for each.
     This eliminates the need to manually change config for each model.
     """
-    print("\n" + "="*60)
-    print("AUTO-TRAINING ALL ENSEMBLE MODELS")
-    print("="*60)
-    print(f"Models to train: {len(config.ENSEMBLE_MODELS)}")
-    for i, model in enumerate(config.ENSEMBLE_MODELS, 1):
-        print(f"  {i}. {model}")
-    print("="*60 + "\n")
+    main_process = is_main_process()
+    model_list = list(config.ENSEMBLE_MODELS)
+    if 'maxvit_xlarge_tf_384' in model_list:
+        model_list = ['maxvit_xlarge_tf_384'] + [m for m in model_list if m != 'maxvit_xlarge_tf_384']
+
+    if main_process:
+        print("\n" + "="*60)
+        print("AUTO-TRAINING ALL ENSEMBLE MODELS")
+        print("="*60)
+        print(f"Models to train: {len(model_list)}")
+        for i, model in enumerate(model_list, 1):
+            print(f"  {i}. {model}")
+        print("="*60 + "\n")
     
     # Store original settings
     original_model_name = config.MODEL_NAME
@@ -1003,10 +1022,11 @@ def train_all_ensemble_models(config):
     
     all_results = []
     
-    for model_idx, model_name in enumerate(config.ENSEMBLE_MODELS, 1):
-        print("\n" + "="*60)
-        print(f"Training Model {model_idx}/{len(config.ENSEMBLE_MODELS)}: {model_name}")
-        print("="*60)
+    for model_idx, model_name in enumerate(model_list, 1):
+        if main_process:
+            print("\n" + "="*60)
+            print(f"Training Model {model_idx}/{len(model_list)}: {model_name}")
+            print("="*60)
         
         # Update model name
         config.MODEL_NAME = model_name
@@ -1014,10 +1034,11 @@ def train_all_ensemble_models(config):
         # Skip model entirely if all folds already exist
         existing_folds = [
             fold for fold in range(config.N_FOLDS)
-            if (config.MODEL_DIR / f'{model_name}_fold{fold}_best.pth').exists()
+            if is_checkpoint_valid(config.MODEL_DIR / f'{model_name}_fold{fold}_best.pth')
         ]
         if len(existing_folds) == config.N_FOLDS:
-            print(f"All {config.N_FOLDS} folds already exist for {model_name}. Skipping training.")
+            if main_process:
+                print(f"All {config.N_FOLDS} folds already exist for {model_name}. Skipping training.")
             continue
         
         # Apply model-specific settings if available
@@ -1028,15 +1049,17 @@ def train_all_ensemble_models(config):
             # MaxViT models need specific image sizes (384 for maxvit_xlarge_tf_384)
             if 'img_size' in settings:
                 config.IMG_SIZE = settings.get('img_size', config.IMG_SIZE)
-            print(f"Applied model-specific settings:")
-            print(f"  Learning Rate: {config.LEARNING_RATE}")
-            print(f"  Batch Size: {config.BATCH_SIZE}")
-            if 'img_size' in settings:
-                print(f"  Image Size: {config.IMG_SIZE}")
+            if main_process:
+                print(f"Applied model-specific settings:")
+                print(f"  Learning Rate: {config.LEARNING_RATE}")
+                print(f"  Batch Size: {config.BATCH_SIZE}")
+                if 'img_size' in settings:
+                    print(f"  Image Size: {config.IMG_SIZE}")
         else:
-            print(f"Using default settings:")
-            print(f"  Learning Rate: {config.LEARNING_RATE}")
-            print(f"  Batch Size: {config.BATCH_SIZE}")
+            if main_process:
+                print(f"Using default settings:")
+                print(f"  Learning Rate: {config.LEARNING_RATE}")
+                print(f"  Batch Size: {config.BATCH_SIZE}")
         
         try:
             # Train this model
@@ -1048,12 +1071,14 @@ def train_all_ensemble_models(config):
                 'val_metrics': val_metrics
             })
             
-            print(f"\n✓ Model {model_idx} completed - Macro-F1: {val_macro_f1:.4f}")
+            if main_process:
+                print(f"\n✓ Model {model_idx} completed - Macro-F1: {val_macro_f1:.4f}")
             
         except Exception as e:
-            print(f"\n✗ Error training {model_name}: {e}")
-            import traceback
-            traceback.print_exc()
+            if main_process:
+                print(f"\n✗ Error training {model_name}: {e}")
+                import traceback
+                traceback.print_exc()
             continue
         finally:
             # Restore settings after each model (important for img_size)
@@ -1068,13 +1093,14 @@ def train_all_ensemble_models(config):
     config.IMG_SIZE = original_img_size
     
     # Print summary
-    print("\n" + "="*60)
-    print("ENSEMBLE TRAINING SUMMARY")
-    print("="*60)
-    for i, result in enumerate(all_results, 1):
-        print(f"{i}. {result['model_name']}: Macro-F1 = {result['val_macro_f1']:.4f}")
+    if main_process:
+        print("\n" + "="*60)
+        print("ENSEMBLE TRAINING SUMMARY")
+        print("="*60)
+        for i, result in enumerate(all_results, 1):
+            print(f"{i}. {result['model_name']}: Macro-F1 = {result['val_macro_f1']:.4f}")
     
-    if all_results:
+    if all_results and main_process:
         mean_f1 = np.mean([r['val_macro_f1'] for r in all_results])
         print(f"\nMean Macro-F1 across all models: {mean_f1:.4f}")
         print("="*60)
@@ -1087,24 +1113,29 @@ def train_single_model(config):
     Supports pseudo-labels automatically if available
     """
     # Load data - support pseudo-labels
-    print("Loading data...")
+    if is_main_process():
+        print("Loading data...")
     
     # Check if pseudo-labels exist (Session 2 feature)
     merged_train_path = config.PRED_DIR / 'merged_train_with_pseudo.csv'
     use_pseudo_labels = merged_train_path.exists()
     
     if use_pseudo_labels:
-        print("✓ Found merged training data with pseudo-labels (Session 2)")
+        if is_main_process():
+            print("✓ Found merged training data with pseudo-labels (Session 2)")
         all_train = pd.read_csv(merged_train_path)
-        print(f"  Total samples (including pseudo-labels): {len(all_train)}")
+        if is_main_process():
+            print(f"  Total samples (including pseudo-labels): {len(all_train)}")
     else:
-        print("Using original training data only (Session 1)")
+        if is_main_process():
+            print("Using original training data only (Session 1)")
         phase2_train = pd.read_csv(config.PHASE2_TRAIN_CSV)
         
         # CRITICAL FIX: Include Phase 2 Eval set in training (README says "may be used for training")
         # This adds ~5,350 additional images (10% more data) for better performance
         phase2_eval = pd.read_csv(config.PHASE2_EVAL_CSV)
-        print(f"Including Phase 2 Eval set: {len(phase2_eval)} additional samples")
+        if is_main_process():
+            print(f"Including Phase 2 Eval set: {len(phase2_eval)} additional samples")
         
         # Combine phase1 and phase2 for training
         phase1 = pd.read_csv(config.PHASE1_CSV)
@@ -1119,8 +1150,9 @@ def train_single_model(config):
             phase2_eval[['ID', 'labels']]  # CRITICAL: Include eval set for maximum training data
         ], ignore_index=True)
     
-    print(f"Total training samples: {len(all_train)}")
-    print(f"Class distribution:\n{all_train['labels'].value_counts()}")
+    if is_main_process():
+        print(f"Total training samples: {len(all_train)}")
+        print(f"Class distribution:\n{all_train['labels'].value_counts()}")
 
     
     # Stratified K-Fold
@@ -1134,9 +1166,9 @@ def train_single_model(config):
     existing_folds = set()
     for fold in range(config.N_FOLDS):
         model_path = config.MODEL_DIR / f'{config.MODEL_NAME}_fold{fold}_best.pth'
-        if model_path.exists():
+        if is_checkpoint_valid(model_path):
             existing_folds.add(fold)
-    if existing_folds:
+    if existing_folds and is_main_process():
         print(f"Found existing checkpoints for folds: {sorted(existing_folds)}")
         print("These folds will be skipped and not retrained.")
 
@@ -1176,7 +1208,8 @@ def train_single_model(config):
                 'skipped': True,
                 'summary_loaded': summary_loaded
             })
-            print(f"Skipping Fold {fold}: checkpoint already exists")
+            if is_main_process():
+                print(f"Skipping Fold {fold}: checkpoint already exists")
             continue
 
         val_macro_f1, val_metrics = train_fold(fold, train_df, val_df, config)
