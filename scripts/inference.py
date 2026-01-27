@@ -25,6 +25,17 @@ from src.data import WBCDataset, get_val_transforms, get_tta_transforms
 from src.models import get_model
 from PIL import Image
 
+def get_loader_kwargs(config):
+    kwargs = {
+        'num_workers': config.NUM_WORKERS,
+        'pin_memory': config.PIN_MEMORY,
+    }
+    if config.NUM_WORKERS > 0:
+        kwargs['prefetch_factor'] = getattr(config, 'PREFETCH_FACTOR', 4)
+        kwargs['persistent_workers'] = getattr(config, 'PERSISTENT_WORKERS', True)
+        kwargs['timeout'] = 300
+    return kwargs
+
 def load_model(model_path, device='cuda'):
     """Load trained model"""
     checkpoint = torch.load(model_path, map_location=device)
@@ -101,42 +112,46 @@ def predict_single_model(model, dataloader, device, tta=False, tta_transforms=No
     all_names = []
     
     with torch.no_grad():
-        for batch in tqdm(dataloader, desc='Predicting'):
-            if len(batch) == 2:
-                images, names = batch
-            else:
-                images, labels, names = batch
-            
-            images = images.to(device)
-            
-            if tta and tta_transforms:
-                # Test Time Augmentation
-                tta_preds = []
-                for tta_transform in tta_transforms:
-                    # Apply TTA transform
-                    tta_images = []
-                    for img in images:
-                        img_np = img.cpu().permute(1, 2, 0).numpy()
-                        img_np = (img_np * np.array([0.229, 0.224, 0.225]) + np.array([0.485, 0.456, 0.406])) * 255
-                        img_np = img_np.astype(np.uint8)
-                        transformed = tta_transform(image=img_np)
-                        tta_images.append(transformed['image'])
-                    tta_images = torch.stack(tta_images).to(device)
-                    
-                    outputs = model(tta_images)
-                    probs = F.softmax(outputs, dim=1)
-                    tta_preds.append(probs)
+        for batch_idx, batch in enumerate(tqdm(dataloader, desc='Predicting')):
+            try:
+                if len(batch) == 2:
+                    images, names = batch
+                else:
+                    images, labels, names = batch
                 
-                # Average TTA predictions
-                avg_probs = torch.stack(tta_preds).mean(0)
-            else:
-                outputs = model(images)
-                avg_probs = F.softmax(outputs, dim=1)
-            
-            preds = torch.argmax(avg_probs, dim=1)
-            all_preds.extend(preds.cpu().numpy())
-            all_probs.append(avg_probs.cpu().numpy())
-            all_names.extend(names)
+                images = images.to(device)
+                
+                if tta and tta_transforms:
+                    # Test Time Augmentation
+                    tta_preds = []
+                    for tta_transform in tta_transforms:
+                        # Apply TTA transform
+                        tta_images = []
+                        for img in images:
+                            img_np = img.cpu().permute(1, 2, 0).numpy()
+                            img_np = (img_np * np.array([0.229, 0.224, 0.225]) + np.array([0.485, 0.456, 0.406])) * 255
+                            img_np = img_np.astype(np.uint8)
+                            transformed = tta_transform(image=img_np)
+                            tta_images.append(transformed['image'])
+                        tta_images = torch.stack(tta_images).to(device)
+                        
+                        outputs = model(tta_images)
+                        probs = F.softmax(outputs, dim=1)
+                        tta_preds.append(probs)
+                    
+                    # Average TTA predictions
+                    avg_probs = torch.stack(tta_preds).mean(0)
+                else:
+                    outputs = model(images)
+                    avg_probs = F.softmax(outputs, dim=1)
+                
+                preds = torch.argmax(avg_probs, dim=1)
+                all_preds.extend(preds.cpu().numpy())
+                all_probs.append(avg_probs.cpu().numpy())
+                all_names.extend(names)
+            except Exception as e:
+                print(f"Error processing batch {batch_idx}: {e}")
+                raise
     
     all_probs = np.vstack(all_probs)
     return all_preds, all_probs, all_names
@@ -162,43 +177,47 @@ def predict_ensemble(model_paths, dataloader, device, tta=False, tta_transforms=
     all_names = []
     
     with torch.no_grad():
-        for batch in tqdm(dataloader, desc='Ensemble Predicting'):
-            if len(batch) == 2:
-                images, names = batch
-            else:
-                images, labels, names = batch
-            
-            images = images.to(device)
-            model_probs = []
-            
-            for model in models:
-                if tta and tta_transforms:
-                    tta_preds = []
-                    for tta_transform in tta_transforms:
-                        tta_images = []
-                        for img in images:
-                            img_np = img.cpu().permute(1, 2, 0).numpy()
-                            img_np = (img_np * np.array([0.229, 0.224, 0.225]) + np.array([0.485, 0.456, 0.406])) * 255
-                            img_np = img_np.astype(np.uint8)
-                            transformed = tta_transform(image=img_np)
-                            tta_images.append(transformed['image'])
-                        tta_images = torch.stack(tta_images).to(device)
-                        
-                        outputs = model(tta_images)
-                        probs = F.softmax(outputs, dim=1)
-                        tta_preds.append(probs)
-                    
-                    avg_probs = torch.stack(tta_preds).mean(0)
+        for batch_idx, batch in enumerate(tqdm(dataloader, desc='Ensemble Predicting')):
+            try:
+                if len(batch) == 2:
+                    images, names = batch
                 else:
-                    outputs = model(images)
-                    avg_probs = F.softmax(outputs, dim=1)
+                    images, labels, names = batch
                 
-                model_probs.append(avg_probs.cpu().numpy())
-            
-            # Average across models
-            ensemble_probs = np.stack(model_probs).mean(0)
-            all_ensemble_probs.append(ensemble_probs)
-            all_names.extend(names)
+                images = images.to(device)
+                model_probs = []
+                
+                for model in models:
+                    if tta and tta_transforms:
+                        tta_preds = []
+                        for tta_transform in tta_transforms:
+                            tta_images = []
+                            for img in images:
+                                img_np = img.cpu().permute(1, 2, 0).numpy()
+                                img_np = (img_np * np.array([0.229, 0.224, 0.225]) + np.array([0.485, 0.456, 0.406])) * 255
+                                img_np = img_np.astype(np.uint8)
+                                transformed = tta_transform(image=img_np)
+                                tta_images.append(transformed['image'])
+                            tta_images = torch.stack(tta_images).to(device)
+                            
+                            outputs = model(tta_images)
+                            probs = F.softmax(outputs, dim=1)
+                            tta_preds.append(probs)
+                        
+                        avg_probs = torch.stack(tta_preds).mean(0)
+                    else:
+                        outputs = model(images)
+                        avg_probs = F.softmax(outputs, dim=1)
+                    
+                    model_probs.append(avg_probs.cpu().numpy())
+                
+                # Average across models
+                ensemble_probs = np.stack(model_probs).mean(0)
+                all_ensemble_probs.append(ensemble_probs)
+                all_names.extend(names)
+            except Exception as e:
+                print(f"Error processing batch {batch_idx}: {e}")
+                raise
     
     all_ensemble_probs = np.vstack(all_ensemble_probs)
     all_preds = np.argmax(all_ensemble_probs, axis=1)
@@ -319,48 +338,52 @@ def predict_ensemble_classy(model_paths, dataloader, device, tta=False, tta_tran
     all_names = []
     
     with torch.no_grad():
-        for batch in tqdm(dataloader, desc='Classy Ensemble Predicting'):
-            if len(batch) == 2:
-                images, names = batch
-            else:
-                images, labels, names = batch
-            
-            images = images.to(device)
-            model_probs_list = []
-            
-            for model_idx, model in enumerate(models):
-                if tta and tta_transforms:
-                    tta_preds = []
-                    for tta_transform in tta_transforms:
-                        tta_images = []
-                        for img in images:
-                            img_np = img.cpu().permute(1, 2, 0).numpy()
-                            img_np = (img_np * np.array([0.229, 0.224, 0.225]) + np.array([0.485, 0.456, 0.406])) * 255
-                            img_np = img_np.astype(np.uint8)
-                            transformed = tta_transform(image=img_np)
-                            tta_images.append(transformed['image'])
-                        tta_images = torch.stack(tta_images).to(device)
-                        outputs = model(tta_images)
-                        probs = F.softmax(outputs, dim=1)
-                        tta_preds.append(probs)
-                    avg_probs = torch.stack(tta_preds).mean(0)
+        for batch_idx, batch in enumerate(tqdm(dataloader, desc='Classy Ensemble Predicting')):
+            try:
+                if len(batch) == 2:
+                    images, names = batch
                 else:
-                    outputs = model(images)
-                    avg_probs = F.softmax(outputs, dim=1)
+                    images, labels, names = batch
                 
-                model_probs_list.append(avg_probs.cpu().numpy())
-            
-            # Weighted ensemble: Apply per-class weights
-            batch_size = model_probs_list[0].shape[0]
-            weighted_probs = np.zeros((batch_size, num_classes))
-            
-            for model_idx in range(len(models)):
-                for class_idx in range(num_classes):
-                    weight = class_weights[model_idx, class_idx]
-                    weighted_probs[:, class_idx] += weight * model_probs_list[model_idx][:, class_idx]
-            
-            all_ensemble_probs.append(weighted_probs)
-            all_names.extend(names)
+                images = images.to(device)
+                model_probs_list = []
+                
+                for model_idx, model in enumerate(models):
+                    if tta and tta_transforms:
+                        tta_preds = []
+                        for tta_transform in tta_transforms:
+                            tta_images = []
+                            for img in images:
+                                img_np = img.cpu().permute(1, 2, 0).numpy()
+                                img_np = (img_np * np.array([0.229, 0.224, 0.225]) + np.array([0.485, 0.456, 0.406])) * 255
+                                img_np = img_np.astype(np.uint8)
+                                transformed = tta_transform(image=img_np)
+                                tta_images.append(transformed['image'])
+                            tta_images = torch.stack(tta_images).to(device)
+                            outputs = model(tta_images)
+                            probs = F.softmax(outputs, dim=1)
+                            tta_preds.append(probs)
+                        avg_probs = torch.stack(tta_preds).mean(0)
+                    else:
+                        outputs = model(images)
+                        avg_probs = F.softmax(outputs, dim=1)
+                    
+                    model_probs_list.append(avg_probs.cpu().numpy())
+                
+                # Weighted ensemble: Apply per-class weights
+                batch_size = model_probs_list[0].shape[0]
+                weighted_probs = np.zeros((batch_size, num_classes))
+                
+                for model_idx in range(len(models)):
+                    for class_idx in range(num_classes):
+                        weight = class_weights[model_idx, class_idx]
+                        weighted_probs[:, class_idx] += weight * model_probs_list[model_idx][:, class_idx]
+                
+                all_ensemble_probs.append(weighted_probs)
+                all_names.extend(names)
+            except Exception as e:
+                print(f"Error processing batch {batch_idx}: {e}")
+                raise
     
     all_ensemble_probs = np.vstack(all_ensemble_probs)
     all_preds = np.argmax(all_ensemble_probs, axis=1)
@@ -414,44 +437,48 @@ def predict_ensemble_optimized(
     weights = weights / weights.sum()  # Normalize
     
     with torch.no_grad():
-        for batch in tqdm(dataloader, desc='Optimized Ensemble'):
-            if len(batch) == 2:
-                images, names = batch
-            else:
-                images, labels, names = batch
-            
-            images = images.to(device)
-            model_probs_list = []
-            
-            for model in models:
-                if tta and tta_transforms:
-                    tta_preds = []
-                    for tta_transform in tta_transforms:
-                        tta_images = []
-                        for img in images:
-                            img_np = img.cpu().permute(1, 2, 0).numpy()
-                            img_np = (img_np * np.array([0.229, 0.224, 0.225]) + np.array([0.485, 0.456, 0.406])) * 255
-                            img_np = img_np.astype(np.uint8)
-                            transformed = tta_transform(image=img_np)
-                            tta_images.append(transformed['image'])
-                        tta_images = torch.stack(tta_images).to(device)
-                        outputs = model(tta_images)
-                        probs = F.softmax(outputs, dim=1)
-                        tta_preds.append(probs)
-                    avg_probs = torch.stack(tta_preds).mean(0)
+        for batch_idx, batch in enumerate(tqdm(dataloader, desc='Optimized Ensemble')):
+            try:
+                if len(batch) == 2:
+                    images, names = batch
                 else:
-                    outputs = model(images)
-                    avg_probs = F.softmax(outputs, dim=1)
+                    images, labels, names = batch
                 
-                model_probs_list.append(avg_probs.cpu().numpy())
-            
-            # Weighted average
-            weighted_probs = np.zeros_like(model_probs_list[0])
-            for i, probs in enumerate(model_probs_list):
-                weighted_probs += weights[i] * probs
-            
-            all_ensemble_probs.append(weighted_probs)
-            all_names.extend(names)
+                images = images.to(device)
+                model_probs_list = []
+                
+                for model in models:
+                    if tta and tta_transforms:
+                        tta_preds = []
+                        for tta_transform in tta_transforms:
+                            tta_images = []
+                            for img in images:
+                                img_np = img.cpu().permute(1, 2, 0).numpy()
+                                img_np = (img_np * np.array([0.229, 0.224, 0.225]) + np.array([0.485, 0.456, 0.406])) * 255
+                                img_np = img_np.astype(np.uint8)
+                                transformed = tta_transform(image=img_np)
+                                tta_images.append(transformed['image'])
+                            tta_images = torch.stack(tta_images).to(device)
+                            outputs = model(tta_images)
+                            probs = F.softmax(outputs, dim=1)
+                            tta_preds.append(probs)
+                        avg_probs = torch.stack(tta_preds).mean(0)
+                    else:
+                        outputs = model(images)
+                        avg_probs = F.softmax(outputs, dim=1)
+                    
+                    model_probs_list.append(avg_probs.cpu().numpy())
+                
+                # Weighted average
+                weighted_probs = np.zeros_like(model_probs_list[0])
+                for i, probs in enumerate(model_probs_list):
+                    weighted_probs += weights[i] * probs
+                
+                all_ensemble_probs.append(weighted_probs)
+                all_names.extend(names)
+            except Exception as e:
+                print(f"Error processing batch {batch_idx}: {e}")
+                raise
     
     all_ensemble_probs = np.vstack(all_ensemble_probs)
     all_preds = np.argmax(all_ensemble_probs, axis=1)
@@ -474,10 +501,7 @@ def predict_test_set(config, model_paths=None, use_ensemble=True, tta=True, use_
         test_dataset,
         batch_size=config.BATCH_SIZE,
         shuffle=False,
-        num_workers=config.NUM_WORKERS,
-        pin_memory=config.PIN_MEMORY,
-        prefetch_factor=getattr(config, 'PREFETCH_FACTOR', 4),
-        persistent_workers=getattr(config, 'PERSISTENT_WORKERS', True) if config.NUM_WORKERS > 0 else False
+        **get_loader_kwargs(config)
     )
     
     # Get TTA transforms if needed
@@ -550,10 +574,7 @@ def predict_eval_set(config, model_paths=None, use_ensemble=True, tta=True, use_
         eval_dataset,
         batch_size=config.BATCH_SIZE,
         shuffle=False,
-        num_workers=config.NUM_WORKERS,
-        pin_memory=config.PIN_MEMORY,
-        prefetch_factor=getattr(config, 'PREFETCH_FACTOR', 4),
-        persistent_workers=getattr(config, 'PERSISTENT_WORKERS', True) if config.NUM_WORKERS > 0 else False
+        **get_loader_kwargs(config)
     )
     
     tta_transforms = None

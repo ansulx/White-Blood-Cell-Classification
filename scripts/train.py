@@ -23,7 +23,7 @@ from PIL import Image
 import albumentations as A
 import matplotlib.pyplot as plt
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import sys
 from pathlib import Path
@@ -64,6 +64,22 @@ def is_checkpoint_valid(model_path):
         return isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint
     except Exception:
         return False
+
+def safe_barrier(timeout_seconds=300):
+    if dist.is_available() and dist.is_initialized():
+        try:
+            dist.barrier(timeout=timedelta(seconds=timeout_seconds))
+        except Exception as e:
+            if is_main_process():
+                print(f"DDP barrier timeout/error: {e}")
+            raise
+
+def ddp_sync_error(local_error, device):
+    if not dist.is_available() or not dist.is_initialized():
+        return local_error
+    error_tensor = torch.tensor(1 if local_error else 0, device=device)
+    dist.all_reduce(error_tensor, op=dist.ReduceOp.MAX)
+    return bool(error_tensor.item())
 
 def compute_class_weights(labels, method='balanced', power=1.0):
     """
@@ -713,12 +729,14 @@ def train_fold(fold, train_df, val_df, config):
             train_dataset,
             num_replicas=getattr(config, 'WORLD_SIZE', 1),
             rank=getattr(config, 'RANK', 0),
-            shuffle=True
+            shuffle=True,
+            drop_last=True
         )
         train_loader = DataLoader(
             train_dataset,
             batch_size=config.BATCH_SIZE,
             sampler=train_sampler,
+            drop_last=True,
             **loader_kwargs
         )
     else:
@@ -888,50 +906,75 @@ def train_fold(fold, train_df, val_df, config):
 
         # Keep all ranks in sync before reshuffling
         if distributed:
-            dist.barrier()
+            safe_barrier()
 
+        local_error = False
         if train_sampler is not None:
-            train_sampler.set_epoch(epoch)
+            try:
+                train_sampler.set_epoch(epoch)
+            except Exception as e:
+                local_error = True
+                if main_process:
+                    print(f"DistributedSampler.set_epoch failed: {e}")
+        if ddp_sync_error(local_error, config.DEVICE):
+            raise RuntimeError("DistributedSampler.set_epoch failed on at least one rank.")
 
         # Ensure sampler state is aligned across ranks
         if distributed:
-            dist.barrier()
+            safe_barrier()
         
         # Gradient clipping value
         grad_clip = config.GRADIENT_CLIP_VALUE if config.USE_GRADIENT_CLIPPING else None
         
-        train_loss, train_acc = train_epoch(
-            model, train_loader, criterion, optimizer, config.DEVICE, scheduler,
-            gradient_clip_value=grad_clip,
-            use_mixup=config.USE_MIXUP,
-            mixup_alpha=config.MIXUP_ALPHA,
-            use_cutmix=config.USE_CUTMIX,
-            cutmix_alpha=config.CUTMIX_ALPHA,
-            use_amp=config.USE_MIXED_PRECISION,
-            scaler=scaler,
-            config=config,
-            is_main_process=main_process
-        )
+        local_error = False
+        try:
+            train_loss, train_acc = train_epoch(
+                model, train_loader, criterion, optimizer, config.DEVICE, scheduler,
+                gradient_clip_value=grad_clip,
+                use_mixup=config.USE_MIXUP,
+                mixup_alpha=config.MIXUP_ALPHA,
+                use_cutmix=config.USE_CUTMIX,
+                cutmix_alpha=config.CUTMIX_ALPHA,
+                use_amp=config.USE_MIXED_PRECISION,
+                scaler=scaler,
+                config=config,
+                is_main_process=main_process
+            )
+        except Exception as e:
+            local_error = True
+            if main_process:
+                print(f"Training failed in epoch {epoch+1}: {e}")
+        if ddp_sync_error(local_error, config.DEVICE):
+            raise RuntimeError("Training failed on at least one rank.")
 
         # Ensure all ranks finish training before validation
         if distributed:
-            dist.barrier()
+            safe_barrier()
         
         # Get class names for metrics
         class_names = list(train_dataset.idx_to_class.values())
         
+        local_error = False
         if main_process:
-            val_loss, val_acc, _, _, val_metrics = validate(
-                model, val_loader, criterion, config.DEVICE, 
-                class_names=class_names, use_amp=config.USE_MIXED_PRECISION,
-                is_main_process=main_process
-            )
+            try:
+                val_loss, val_acc, _, _, val_metrics = validate(
+                    model, val_loader, criterion, config.DEVICE, 
+                    class_names=class_names, use_amp=config.USE_MIXED_PRECISION,
+                    is_main_process=main_process
+                )
+            except Exception as e:
+                local_error = True
+                print(f"Validation failed in epoch {epoch+1}: {e}")
+                val_loss, val_acc, val_metrics = 0.0, 0.0, {'macro_f1': 0.0}
         else:
             val_loss, val_acc, val_metrics = 0.0, 0.0, {'macro_f1': 0.0}
 
+        if ddp_sync_error(local_error, config.DEVICE):
+            raise RuntimeError("Validation failed on at least one rank.")
+
         # Ensure all ranks wait for validation before proceeding
         if distributed:
-            dist.barrier()
+            safe_barrier()
         
         # Step scheduler after each epoch
         if scheduler:
