@@ -70,6 +70,10 @@ def safe_barrier(timeout_seconds=300):
         try:
             dist.barrier(timeout=timedelta(seconds=timeout_seconds))
         except Exception as e:
+            # Older PyTorch may not support timeout kwarg
+            if isinstance(e, TypeError) and "unexpected keyword argument 'timeout'" in str(e):
+                dist.barrier()
+                return
             if is_main_process():
                 print(f"DDP barrier timeout/error: {e}")
             raise
@@ -1078,6 +1082,7 @@ def train_all_ensemble_models(config):
     original_img_size = config.IMG_SIZE
     
     all_results = []
+    had_failure = False
     
     for model_idx, model_name in enumerate(model_list, 1):
         if main_process:
@@ -1136,6 +1141,9 @@ def train_all_ensemble_models(config):
                 print(f"\n✗ Error training {model_name}: {e}")
                 import traceback
                 traceback.print_exc()
+            had_failure = True
+            if distributed:
+                raise
             continue
         finally:
             # Restore settings after each model (important for img_size)
@@ -1162,7 +1170,7 @@ def train_all_ensemble_models(config):
         print(f"\nMean Macro-F1 across all models: {mean_f1:.4f}")
         print("="*60)
     
-    return all_results
+    return all_results, had_failure
 
 def train_single_model(config):
     """
@@ -1417,10 +1425,10 @@ def main():
             print("="*60)
         
         # Train all models (Session 1)
-        all_results = train_all_ensemble_models(config)
+        all_results, had_failure = train_all_ensemble_models(config)
         
         # Session 2: Pseudo-labeling and retraining
-        if config.RUN_PSEUDO_LABELING and main_process:
+        if config.RUN_PSEUDO_LABELING and main_process and not had_failure:
             print("\n" + "="*60)
             print("SESSION 2: PSEUDO-LABELING")
             print("="*60)
