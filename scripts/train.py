@@ -973,8 +973,11 @@ def train_fold(fold, train_df, val_df, config):
         else:
             val_loss, val_acc, val_metrics = 0.0, 0.0, {'macro_f1': 0.0}
 
-        if ddp_sync_error(local_error, config.DEVICE):
-            raise RuntimeError("Validation failed on at least one rank.")
+        if distributed:
+            success_tensor = torch.tensor(0 if local_error else 1, device=config.DEVICE)
+            dist.broadcast(success_tensor, src=0)
+            if success_tensor.item() == 0:
+                raise RuntimeError("Validation failed on main rank.")
 
         # Ensure all ranks wait for validation before proceeding
         if distributed:
