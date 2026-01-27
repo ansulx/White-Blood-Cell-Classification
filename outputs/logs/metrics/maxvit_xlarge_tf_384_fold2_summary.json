@@ -1,0 +1,28 @@
+{
+  "fold": 2,
+  "model_name": "maxvit_xlarge_tf_384",
+  "best_val_macro_f1": 0.7923184227607583,
+  "best_val_acc": 93.71999480991306,
+  "bl_performance": {
+    "f1": 0.9056261343012704,
+    "precision": 0.8816254416961131,
+    "recall": 0.9309701492537313
+  },
+  "total_epochs": 50,
+  "final_train_loss": 0.5560237491557459,
+  "final_train_acc": 84.21240430777216,
+  "final_val_loss": 1.9591126117963513,
+  "final_val_acc": 93.71999480991306,
+  "final_val_macro_f1": 0.7836236549904869,
+  "best_epoch": 49,
+  "config": {
+    "batch_size": 32,
+    "learning_rate": 3e-05,
+    "weight_decay": 0.0005,
+    "img_size": 384,
+    "num_epochs": 50,
+    "label_smoothing": 0.1,
+    "use_mixup": true,
+    "use_cutmix": true
+  }
+}

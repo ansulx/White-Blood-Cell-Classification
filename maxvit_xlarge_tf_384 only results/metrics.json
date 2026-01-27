@@ -1,0 +1,17 @@
+{
+  "eval_macro_f1": 0.9156669677510624,
+  "eval_accuracy": 0.971214953271028,
+  "weights": [
+    0.3673016428947449,
+    0.29340705275535583,
+    0.3392913341522217
+  ],
+  "model_paths": [
+    "/workspace/White-Blood-Cell-Classification/outputs/models/maxvit_xlarge_tf_384_fold0_best.pth",
+    "/workspace/White-Blood-Cell-Classification/outputs/models/maxvit_xlarge_tf_384_fold1_best.pth",
+    "/workspace/White-Blood-Cell-Classification/outputs/models/maxvit_xlarge_tf_384_fold2_best.pth"
+  ],
+  "img_size": 384,
+  "tta_transforms": 15,
+  "batch_size": 32
+}
