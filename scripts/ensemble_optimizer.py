@@ -23,8 +23,16 @@ sys.path.insert(0, str(project_root))
 
 from src.config import Config
 from src.data import WBCDataset, get_val_transforms, get_tta_transforms
-from scripts.inference import load_model, predict_ensemble, predict_ensemble_classy
+from scripts.inference import load_model, predict_ensemble, predict_ensemble_classy, predict_ensemble_mixed_sizes, get_model_img_size
 from sklearn.metrics import f1_score, accuracy_score
+
+_MEAN = np.array(Config.MEAN)
+_STD = np.array(Config.STD)
+
+def denorm_to_uint8(img_tensor):
+    img_np = img_tensor.cpu().permute(1, 2, 0).numpy()
+    img_np = (img_np * _STD + _MEAN) * 255
+    return img_np.astype(np.uint8)
 
 def evaluate_ensemble_weights(
     model_paths,
@@ -79,9 +87,7 @@ def evaluate_ensemble_weights(
                     for tta_transform in tta_transforms:
                         tta_images = []
                         for img in images:
-                            img_np = img.cpu().permute(1, 2, 0).numpy()
-                            img_np = (img_np * np.array([0.229, 0.224, 0.225]) + np.array([0.485, 0.456, 0.406])) * 255
-                            img_np = img_np.astype(np.uint8)
+                            img_np = denorm_to_uint8(img)
                             transformed = tta_transform(image=img_np)
                             tta_images.append(transformed['image'])
                         tta_images = torch.stack(tta_images).to(device)
@@ -146,27 +152,31 @@ def optimize_ensemble_weights(
     eval_df = pd.read_csv(config.PHASE2_EVAL_CSV)
     eval_labels = eval_df['labels'].values.tolist()
     
-    eval_dataset = WBCDataset(
-        csv_path=config.PHASE2_EVAL_CSV,
-        img_dir=config.PHASE2_EVAL_DIR,
-        transform=get_val_transforms(config.IMG_SIZE),
-        is_train=False
-    )
-    
-    infer_batch_size = getattr(config, 'INFER_BATCH_SIZE', config.BATCH_SIZE)
-    eval_loader = DataLoader(
-        eval_dataset,
-        batch_size=infer_batch_size,
-        shuffle=False,
-        num_workers=config.NUM_WORKERS,
-        pin_memory=config.PIN_MEMORY,
-        prefetch_factor=getattr(config, 'PREFETCH_FACTOR', 4),
-        persistent_workers=getattr(config, 'PERSISTENT_WORKERS', True) if config.NUM_WORKERS > 0 else False
-    )
-    
-    tta_transforms = None
-    if config.TTA:
-        tta_transforms = get_tta_transforms(config.IMG_SIZE)
+    sizes = {get_model_img_size(p, config) for p in model_paths}
+    mixed_sizes = len(sizes) > 1
+
+    if not mixed_sizes:
+        eval_dataset = WBCDataset(
+            csv_path=config.PHASE2_EVAL_CSV,
+            img_dir=config.PHASE2_EVAL_DIR,
+            transform=get_val_transforms(config.IMG_SIZE),
+            is_train=False
+        )
+        
+        infer_batch_size = getattr(config, 'INFER_BATCH_SIZE', config.BATCH_SIZE)
+        eval_loader = DataLoader(
+            eval_dataset,
+            batch_size=infer_batch_size,
+            shuffle=False,
+            num_workers=config.NUM_WORKERS,
+            pin_memory=config.PIN_MEMORY,
+            prefetch_factor=getattr(config, 'PREFETCH_FACTOR', 4),
+            persistent_workers=getattr(config, 'PERSISTENT_WORKERS', True) if config.NUM_WORKERS > 0 else False
+        )
+        
+        tta_transforms = None
+        if config.TTA:
+            tta_transforms = get_tta_transforms(config.IMG_SIZE)
     
     num_models = len(model_paths)
     
@@ -176,6 +186,36 @@ def optimize_ensemble_weights(
     class_names = [temp_idx_to_class[i] for i in range(num_classes)]
     del temp_model
     torch.cuda.empty_cache()
+
+    def eval_mixed(weights):
+        preds, probs, names, idx_to_class = predict_ensemble_mixed_sizes(
+            model_paths,
+            config,
+            csv_path=config.PHASE2_EVAL_CSV,
+            img_dir=config.PHASE2_EVAL_DIR,
+            tta=config.TTA,
+            weights=weights,
+            eval_labels=eval_labels
+        )
+        pred_labels = [idx_to_class[p] for p in preds]
+        macro_f1 = f1_score(eval_labels, pred_labels, average='macro', zero_division=0)
+        acc = accuracy_score(eval_labels, pred_labels)
+        per_class_f1 = f1_score(eval_labels, pred_labels, average=None, zero_division=0)
+        return macro_f1, acc, per_class_f1
+
+    def eval_single(model_path):
+        preds, probs, names, idx_to_class = predict_ensemble_mixed_sizes(
+            [model_path],
+            config,
+            csv_path=config.PHASE2_EVAL_CSV,
+            img_dir=config.PHASE2_EVAL_DIR,
+            tta=config.TTA,
+            weights=None,
+            eval_labels=eval_labels
+        )
+        pred_labels = [idx_to_class[p] for p in preds]
+        macro_f1 = f1_score(eval_labels, pred_labels, average='macro', zero_division=0)
+        return macro_f1
     
     best_weights = None
     best_f1 = 0.0
@@ -188,12 +228,15 @@ def optimize_ensemble_weights(
         model_f1s = []
         for i, model_path in enumerate(model_paths):
             print(f"  Evaluating model {i+1}/{num_models}...")
-            weights = np.zeros(num_models)
-            weights[i] = 1.0
-            f1, acc, _ = evaluate_ensemble_weights(
-                [model_path], eval_loader, eval_labels, config.DEVICE,
-                weights, tta=config.TTA, tta_transforms=tta_transforms
-            )
+            if mixed_sizes:
+                f1 = eval_single(model_path)
+            else:
+                weights = np.zeros(num_models)
+                weights[i] = 1.0
+                f1, acc, _ = evaluate_ensemble_weights(
+                    [model_path], eval_loader, eval_labels, config.DEVICE,
+                    weights, tta=config.TTA, tta_transforms=tta_transforms
+                )
             model_f1s.append(f1)
             print(f"    Model {i+1} Macro F1: {f1:.5f}")
         
@@ -203,10 +246,13 @@ def optimize_ensemble_weights(
         weights = model_f1s / model_f1s.sum()
         
         # Evaluate weighted ensemble
-        f1, acc, per_class_f1 = evaluate_ensemble_weights(
-            model_paths, eval_loader, eval_labels, config.DEVICE,
-            weights, tta=config.TTA, tta_transforms=tta_transforms
-        )
+        if mixed_sizes:
+            f1, acc, per_class_f1 = eval_mixed(weights)
+        else:
+            f1, acc, per_class_f1 = evaluate_ensemble_weights(
+                model_paths, eval_loader, eval_labels, config.DEVICE,
+                weights, tta=config.TTA, tta_transforms=tta_transforms
+            )
         
         print(f"  Weighted Ensemble Macro F1: {f1:.5f}")
         results['weighted'] = {
@@ -224,10 +270,13 @@ def optimize_ensemble_weights(
     if method in ['equal', 'all']:
         print("\n2. Testing Equal Weight Ensemble...")
         weights = np.ones(num_models) / num_models
-        f1, acc, per_class_f1 = evaluate_ensemble_weights(
-            model_paths, eval_loader, eval_labels, config.DEVICE,
-            weights, tta=config.TTA, tta_transforms=tta_transforms
-        )
+        if mixed_sizes:
+            f1, acc, per_class_f1 = eval_mixed(weights)
+        else:
+            f1, acc, per_class_f1 = evaluate_ensemble_weights(
+                model_paths, eval_loader, eval_labels, config.DEVICE,
+                weights, tta=config.TTA, tta_transforms=tta_transforms
+            )
         
         print(f"  Equal Weight Ensemble Macro F1: {f1:.5f}")
         results['equal'] = {
@@ -245,16 +294,19 @@ def optimize_ensemble_weights(
     if method in ['classy', 'all']:
         print("\n3. Testing Classy Ensemble (per-class weights)...")
         try:
-            preds, probs, names, idx_to_class = predict_ensemble_classy(
-                model_paths, eval_loader, config.DEVICE,
-                tta=config.TTA, tta_transforms=tta_transforms,
-                eval_labels=eval_labels, class_names=class_names
-            )
-            
-            pred_labels = [idx_to_class[p] for p in preds]
-            f1 = f1_score(eval_labels, pred_labels, average='macro', zero_division=0)
-            acc = accuracy_score(eval_labels, pred_labels)
-            per_class_f1 = f1_score(eval_labels, pred_labels, average=None, zero_division=0)
+            if mixed_sizes:
+                f1, acc, per_class_f1 = eval_mixed('classy')
+            else:
+                preds, probs, names, idx_to_class = predict_ensemble_classy(
+                    model_paths, eval_loader, config.DEVICE,
+                    tta=config.TTA, tta_transforms=tta_transforms,
+                    eval_labels=eval_labels, class_names=class_names
+                )
+                
+                pred_labels = [idx_to_class[p] for p in preds]
+                f1 = f1_score(eval_labels, pred_labels, average='macro', zero_division=0)
+                acc = accuracy_score(eval_labels, pred_labels)
+                per_class_f1 = f1_score(eval_labels, pred_labels, average=None, zero_division=0)
             
             print(f"  Classy Ensemble Macro F1: {f1:.5f}")
             results['classy'] = {
@@ -273,6 +325,9 @@ def optimize_ensemble_weights(
             print("  Continuing with other methods...")
     
     if method == 'grid_search':
+        if mixed_sizes:
+            print("\n4. Grid Search skipped for mixed image sizes.")
+            return best_weights, best_f1, best_method, results
         print("\n4. Grid Search for Optimal Weights...")
         # Simple grid search (limited to avoid too many combinations)
         best_grid_f1 = 0.0
