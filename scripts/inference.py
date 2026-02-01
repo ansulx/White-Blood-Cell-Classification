@@ -24,6 +24,84 @@ from src.config import Config
 from src.data import WBCDataset, get_val_transforms, get_tta_transforms
 from src.models import get_model
 from PIL import Image
+from sklearn.metrics import f1_score
+
+def get_model_img_size(model_path, config):
+    path_str = str(model_path)
+    if 'swinv2_large_window12to16_192to256' in path_str:
+        return 256
+    if 'maxvit_xlarge_tf_384' in path_str:
+        return 384
+    return config.IMG_SIZE
+
+def predict_ensemble_mixed_sizes(
+    model_paths,
+    config,
+    csv_path,
+    img_dir,
+    tta=True,
+    weights=None,
+    eval_labels=None
+):
+    per_model_probs = []
+    names_ref = None
+    idx_to_class = None
+
+    for model_path in model_paths:
+        img_size = get_model_img_size(model_path, config)
+        dataset = WBCDataset(
+            csv_path=csv_path,
+            img_dir=img_dir,
+            transform=get_val_transforms(img_size),
+            is_train=False
+        )
+        loader = DataLoader(
+            dataset,
+            batch_size=config.BATCH_SIZE,
+            shuffle=False,
+            **get_loader_kwargs(config)
+        )
+        tta_transforms = get_tta_transforms(img_size) if tta else None
+        model, idx_to_class = load_model(model_path, config.DEVICE)
+        preds, probs, names = predict_single_model(
+            model, loader, config.DEVICE, tta=tta, tta_transforms=tta_transforms
+        )
+        if names_ref is None:
+            names_ref = names
+        elif names_ref != names:
+            raise ValueError("Mismatched image ordering between model predictions.")
+        per_model_probs.append(probs)
+
+    per_model_probs = np.array(per_model_probs)  # [M, N, C]
+
+    if isinstance(weights, str) and weights == 'classy' and eval_labels is not None:
+        # Compute per-class weights based on per-model F1
+        class_names = [idx_to_class[i] for i in range(len(idx_to_class))]
+        num_models = len(model_paths)
+        num_classes = len(class_names)
+        class_f1_scores = np.zeros((num_models, num_classes))
+        for i in range(num_models):
+            preds = np.argmax(per_model_probs[i], axis=1)
+            pred_labels = [idx_to_class[p] for p in preds]
+            for j, class_name in enumerate(class_names):
+                y_true_binary = [1 if label == class_name else 0 for label in eval_labels]
+                y_pred_binary = [1 if label == class_name else 0 for label in pred_labels]
+                class_f1_scores[i, j] = f1_score(y_true_binary, y_pred_binary, zero_division=0)
+        class_f1_scores = class_f1_scores + 1e-8
+        class_weights = class_f1_scores / class_f1_scores.sum(axis=0, keepdims=True)
+        weighted_probs = np.zeros_like(per_model_probs[0])
+        for i in range(num_models):
+            for j in range(num_classes):
+                weighted_probs[:, j] += class_weights[i, j] * per_model_probs[i][:, j]
+    elif weights is not None:
+        weights = np.array(weights, dtype=np.float32)
+        weights = weights / weights.sum()
+        weighted_probs = np.tensordot(weights, per_model_probs, axes=(0, 0))
+    else:
+        weighted_probs = per_model_probs.mean(axis=0)
+
+    preds = np.argmax(weighted_probs, axis=1)
+    return preds, weighted_probs, names_ref, idx_to_class
 
 def get_loader_kwargs(config):
     kwargs = {
@@ -511,28 +589,39 @@ def predict_test_set(config, model_paths=None, use_ensemble=True, tta=True, use_
     
     # Make predictions - Support optimized weights (Session 3)
     if use_ensemble and model_paths:
-        if optimized_weights is not None:
-            # Use optimized weights from Session 3
-            preds, probs, names, idx_to_class = predict_ensemble_optimized(
-                model_paths, test_loader, config.DEVICE,
-                weights=optimized_weights,
-                tta=tta, tta_transforms=tta_transforms
-            )
-        elif use_classy_ensemble and class_weights is not None:
-            # Use pre-computed class weights from eval set
-            temp_model, temp_idx_to_class = load_model(model_paths[0], config.DEVICE)
-            class_names = [temp_idx_to_class[i] for i in range(len(temp_idx_to_class))]
-            del temp_model
-            torch.cuda.empty_cache()
-            
-            preds, probs, names, idx_to_class = predict_ensemble_classy(
-                model_paths, test_loader, config.DEVICE, tta=tta, tta_transforms=tta_transforms,
-                eval_labels=None, class_names=class_names
+        sizes = {get_model_img_size(p, config) for p in model_paths}
+        if len(sizes) > 1:
+            preds, probs, names, idx_to_class = predict_ensemble_mixed_sizes(
+                model_paths,
+                config,
+                csv_path=config.PHASE2_TEST_CSV,
+                img_dir=config.PHASE2_TEST_DIR,
+                tta=tta,
+                weights=optimized_weights
             )
         else:
-            preds, probs, names, idx_to_class = predict_ensemble(
-                model_paths, test_loader, config.DEVICE, tta=tta, tta_transforms=tta_transforms
-            )
+            if optimized_weights is not None:
+                # Use optimized weights from Session 3
+                preds, probs, names, idx_to_class = predict_ensemble_optimized(
+                    model_paths, test_loader, config.DEVICE,
+                    weights=optimized_weights,
+                    tta=tta, tta_transforms=tta_transforms
+                )
+            elif use_classy_ensemble and class_weights is not None:
+                # Use pre-computed class weights from eval set
+                temp_model, temp_idx_to_class = load_model(model_paths[0], config.DEVICE)
+                class_names = [temp_idx_to_class[i] for i in range(len(temp_idx_to_class))]
+                del temp_model
+                torch.cuda.empty_cache()
+                
+                preds, probs, names, idx_to_class = predict_ensemble_classy(
+                    model_paths, test_loader, config.DEVICE, tta=tta, tta_transforms=tta_transforms,
+                    eval_labels=None, class_names=class_names
+                )
+            else:
+                preds, probs, names, idx_to_class = predict_ensemble(
+                    model_paths, test_loader, config.DEVICE, tta=tta, tta_transforms=tta_transforms
+                )
     else:
         # Single model
         if model_paths is None:
@@ -582,21 +671,33 @@ def predict_eval_set(config, model_paths=None, use_ensemble=True, tta=True, use_
         tta_transforms = get_tta_transforms(config.IMG_SIZE)
     
     if use_ensemble and model_paths:
-        if use_classy_ensemble and eval_labels is not None:
-            # Get class names from first model
-            temp_model, temp_idx_to_class = load_model(model_paths[0], config.DEVICE)
-            class_names = [temp_idx_to_class[i] for i in range(len(temp_idx_to_class))]
-            del temp_model
-            torch.cuda.empty_cache()
-            
-            preds, probs, names, idx_to_class = predict_ensemble_classy(
-                model_paths, eval_loader, config.DEVICE, tta=tta, tta_transforms=tta_transforms,
-                eval_labels=eval_labels, class_names=class_names
+        sizes = {get_model_img_size(p, config) for p in model_paths}
+        if len(sizes) > 1:
+            preds, probs, names, idx_to_class = predict_ensemble_mixed_sizes(
+                model_paths,
+                config,
+                csv_path=config.PHASE2_EVAL_CSV,
+                img_dir=config.PHASE2_EVAL_DIR,
+                tta=tta,
+                weights='classy' if use_classy_ensemble else None,
+                eval_labels=eval_labels
             )
         else:
-            preds, probs, names, idx_to_class = predict_ensemble(
-            model_paths, eval_loader, config.DEVICE, tta=tta, tta_transforms=tta_transforms
-            )
+            if use_classy_ensemble and eval_labels is not None:
+                # Get class names from first model
+                temp_model, temp_idx_to_class = load_model(model_paths[0], config.DEVICE)
+                class_names = [temp_idx_to_class[i] for i in range(len(temp_idx_to_class))]
+                del temp_model
+                torch.cuda.empty_cache()
+                
+                preds, probs, names, idx_to_class = predict_ensemble_classy(
+                    model_paths, eval_loader, config.DEVICE, tta=tta, tta_transforms=tta_transforms,
+                    eval_labels=eval_labels, class_names=class_names
+                )
+            else:
+                preds, probs, names, idx_to_class = predict_ensemble(
+                    model_paths, eval_loader, config.DEVICE, tta=tta, tta_transforms=tta_transforms
+                )
     else:
         if model_paths is None:
             model_paths = list(config.MODEL_DIR.glob('*_best.pth'))
