@@ -35,8 +35,8 @@ class Config:
     # Session 2: Pseudo-labeling and optimization
     USE_PSEUDO_LABELS = True  # If True, automatically uses pseudo-labels if available (merged_train_with_pseudo.csv)
     PSEUDO_LABEL_THRESHOLD = 0.95  # Confidence threshold for pseudo-labels
-    RUN_PSEUDO_LABELING = True  # If True, generates pseudo-labels after Session 1 training
-    RETRAIN_WITH_PSEUDO = True  # If True, retrains best models with pseudo-labels
+    RUN_PSEUDO_LABELING = False  # Skip pseudo-labeling to save time/credits
+    RETRAIN_WITH_PSEUDO = False  # Skip retraining with pseudo-labels
     
     # Session 3: Final ensemble optimization and submission
     ENSEMBLE_OPTIMIZATION = True  # If True, optimizes ensemble weights before final submission

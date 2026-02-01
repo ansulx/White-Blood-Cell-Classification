@@ -11,6 +11,7 @@ import numpy as np
 from pathlib import Path
 from tqdm import tqdm
 import warnings
+import os
 warnings.filterwarnings('ignore')
 
 import sys
@@ -24,6 +25,14 @@ from src.config import Config
 from src.data import WBCDataset, get_val_transforms, get_tta_transforms
 from src.models import get_model
 from PIL import Image
+
+_MEAN = np.array(Config.MEAN)
+_STD = np.array(Config.STD)
+
+def denorm_to_uint8(img_tensor):
+    img_np = img_tensor.cpu().permute(1, 2, 0).numpy()
+    img_np = (img_np * _STD + _MEAN) * 255
+    return img_np.astype(np.uint8)
 from sklearn.metrics import f1_score
 
 def get_model_img_size(model_path, config):
@@ -114,6 +123,12 @@ def get_loader_kwargs(config):
         kwargs['timeout'] = 300
     return kwargs
 
+def safe_write_csv(df, path):
+    path = Path(path)
+    tmp_path = path.with_suffix(path.suffix + '.tmp')
+    df.to_csv(tmp_path, index=False)
+    os.replace(tmp_path, path)
+
 def load_model(model_path, device='cuda'):
     """Load trained model"""
     checkpoint = torch.load(model_path, map_location=device)
@@ -122,7 +137,7 @@ def load_model(model_path, device='cuda'):
     num_classes = len(class_to_idx)
     
     # Infer model name from path (prioritize best models)
-    model_name = Config.MODEL_NAME
+    model_name = None
     # Swin V2 variants (check Large first, then Base)
     # FIXED: Updated to use window12to16_192to256 (better for 512 images)
     if 'swinv2_large_window12to16_192to256' in str(model_path):
@@ -165,6 +180,10 @@ def load_model(model_path, device='cuda'):
     elif 'efficientnet' in str(model_path):
         model_name = 'efficientnet_b4'  # Default fallback
     
+    if model_name is None:
+        model_name = 'convnextv2_large'
+        print(f"Warning: Could not infer model name from path {model_path}. Using {model_name}.")
+
     model = get_model(model_name, num_classes=num_classes, pretrained=False)
     
     # Handle torch.compile prefix (_orig_mod.) - remove it if present
@@ -206,9 +225,7 @@ def predict_single_model(model, dataloader, device, tta=False, tta_transforms=No
                         # Apply TTA transform
                         tta_images = []
                         for img in images:
-                            img_np = img.cpu().permute(1, 2, 0).numpy()
-                            img_np = (img_np * np.array([0.229, 0.224, 0.225]) + np.array([0.485, 0.456, 0.406])) * 255
-                            img_np = img_np.astype(np.uint8)
+                            img_np = denorm_to_uint8(img)
                             transformed = tta_transform(image=img_np)
                             tta_images.append(transformed['image'])
                         tta_images = torch.stack(tta_images).to(device)
@@ -271,9 +288,7 @@ def predict_ensemble(model_paths, dataloader, device, tta=False, tta_transforms=
                         for tta_transform in tta_transforms:
                             tta_images = []
                             for img in images:
-                                img_np = img.cpu().permute(1, 2, 0).numpy()
-                                img_np = (img_np * np.array([0.229, 0.224, 0.225]) + np.array([0.485, 0.456, 0.406])) * 255
-                                img_np = img_np.astype(np.uint8)
+                                img_np = denorm_to_uint8(img)
                                 transformed = tta_transform(image=img_np)
                                 tta_images.append(transformed['image'])
                             tta_images = torch.stack(tta_images).to(device)
@@ -364,9 +379,7 @@ def predict_ensemble_classy(model_paths, dataloader, device, tta=False, tta_tran
                         for tta_transform in tta_transforms:
                             tta_images = []
                             for img in images:
-                                img_np = img.cpu().permute(1, 2, 0).numpy()
-                                img_np = (img_np * np.array([0.229, 0.224, 0.225]) + np.array([0.485, 0.456, 0.406])) * 255
-                                img_np = img_np.astype(np.uint8)
+                                img_np = denorm_to_uint8(img)
                                 transformed = tta_transform(image=img_np)
                                 tta_images.append(transformed['image'])
                             tta_images = torch.stack(tta_images).to(device)
@@ -432,9 +445,7 @@ def predict_ensemble_classy(model_paths, dataloader, device, tta=False, tta_tran
                         for tta_transform in tta_transforms:
                             tta_images = []
                             for img in images:
-                                img_np = img.cpu().permute(1, 2, 0).numpy()
-                                img_np = (img_np * np.array([0.229, 0.224, 0.225]) + np.array([0.485, 0.456, 0.406])) * 255
-                                img_np = img_np.astype(np.uint8)
+                                img_np = denorm_to_uint8(img)
                                 transformed = tta_transform(image=img_np)
                                 tta_images.append(transformed['image'])
                             tta_images = torch.stack(tta_images).to(device)
@@ -531,9 +542,7 @@ def predict_ensemble_optimized(
                         for tta_transform in tta_transforms:
                             tta_images = []
                             for img in images:
-                                img_np = img.cpu().permute(1, 2, 0).numpy()
-                                img_np = (img_np * np.array([0.229, 0.224, 0.225]) + np.array([0.485, 0.456, 0.406])) * 255
-                                img_np = img_np.astype(np.uint8)
+                                img_np = denorm_to_uint8(img)
                                 transformed = tta_transform(image=img_np)
                                 tta_images.append(transformed['image'])
                             tta_images = torch.stack(tta_images).to(device)
@@ -673,17 +682,26 @@ def predict_eval_set(config, model_paths=None, use_ensemble=True, tta=True, use_
     if use_ensemble and model_paths:
         sizes = {get_model_img_size(p, config) for p in model_paths}
         if len(sizes) > 1:
+            mixed_weights = optimized_weights
+            if mixed_weights is None and use_classy_ensemble:
+                mixed_weights = 'classy'
             preds, probs, names, idx_to_class = predict_ensemble_mixed_sizes(
                 model_paths,
                 config,
                 csv_path=config.PHASE2_EVAL_CSV,
                 img_dir=config.PHASE2_EVAL_DIR,
                 tta=tta,
-                weights='classy' if use_classy_ensemble else None,
+                weights=mixed_weights,
                 eval_labels=eval_labels
             )
         else:
-            if use_classy_ensemble and eval_labels is not None:
+            if optimized_weights is not None:
+                preds, probs, names, idx_to_class = predict_ensemble_optimized(
+                    model_paths, eval_loader, config.DEVICE,
+                    weights=optimized_weights,
+                    tta=tta, tta_transforms=tta_transforms
+                )
+            elif use_classy_ensemble and eval_labels is not None:
                 # Get class names from first model
                 temp_model, temp_idx_to_class = load_model(model_paths[0], config.DEVICE)
                 class_names = [temp_idx_to_class[i] for i in range(len(temp_idx_to_class))]
@@ -742,8 +760,9 @@ def main():
         tta=config.TTA,
         use_classy_ensemble=True
     )
-    eval_submission.to_csv(config.PRED_DIR / 'eval_predictions.csv', index=False)
-    print(f"Eval predictions saved to {config.PRED_DIR / 'eval_predictions.csv'}")
+    eval_path = config.PRED_DIR / 'eval_predictions.csv'
+    safe_write_csv(eval_submission, eval_path)
+    print(f"Eval predictions saved to {eval_path}")
     
     # Then predict on test set with Classy Ensemble
     print("\n" + "="*60)
@@ -756,8 +775,9 @@ def main():
         tta=config.TTA,
         use_classy_ensemble=True
     )
-    test_submission.to_csv(config.PRED_DIR / 'test_predictions.csv', index=False)
-    print(f"Test predictions saved to {config.PRED_DIR / 'test_predictions.csv'}")
+    test_path = config.PRED_DIR / 'test_predictions.csv'
+    safe_write_csv(test_submission, test_path)
+    print(f"Test predictions saved to {test_path}")
 
 if __name__ == '__main__':
     main()

@@ -42,10 +42,19 @@ from sklearn.utils.class_weight import compute_class_weight
 def init_distributed_mode():
     """Initialize torch.distributed if launched with torchrun."""
     if "RANK" in os.environ and "WORLD_SIZE" in os.environ:
+        os.environ.setdefault("NCCL_ASYNC_ERROR_HANDLING", "1")
+        os.environ.setdefault("NCCL_BLOCKING_WAIT", "1")
         rank = int(os.environ["RANK"])
         world_size = int(os.environ["WORLD_SIZE"])
         local_rank = int(os.environ.get("LOCAL_RANK", 0))
-        dist.init_process_group(backend="nccl", init_method="env://")
+        try:
+            dist.init_process_group(
+                backend="nccl",
+                init_method="env://",
+                timeout=timedelta(minutes=30)
+            )
+        except TypeError:
+            dist.init_process_group(backend="nccl", init_method="env://")
         torch.cuda.set_device(local_rank)
         return True, rank, world_size, local_rank
     return False, 0, 1, 0
@@ -712,11 +721,17 @@ def train_fold(fold, train_df, val_df, config):
                 print(f"  {cls}: {class_weights[cls]:.4f}")
 
     train_sampler = None
+    num_workers = config.NUM_WORKERS
+    if distributed and num_workers > 0:
+        num_workers = 0
+        if main_process:
+            print("DDP safe mode: setting num_workers=0 to avoid worker hangs.")
+
     loader_kwargs = {
-        'num_workers': config.NUM_WORKERS,
+        'num_workers': num_workers,
         'pin_memory': config.PIN_MEMORY,
     }
-    if config.NUM_WORKERS > 0:
+    if num_workers > 0:
         loader_kwargs['prefetch_factor'] = getattr(config, 'PREFETCH_FACTOR', 4)
         loader_kwargs['persistent_workers'] = (
             getattr(config, 'PERSISTENT_WORKERS', True) if not distributed else False
@@ -1065,6 +1080,7 @@ def train_all_ensemble_models(config):
     This eliminates the need to manually change config for each model.
     """
     main_process = is_main_process()
+    distributed = getattr(config, 'DISTRIBUTED', False)
     model_list = list(config.ENSEMBLE_MODELS)
     if 'maxvit_xlarge_tf_384' in model_list:
         model_list = ['maxvit_xlarge_tf_384'] + [m for m in model_list if m != 'maxvit_xlarge_tf_384']
