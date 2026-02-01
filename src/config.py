@@ -56,6 +56,7 @@ class Config:
     # Note: For best models (V2 Large, Swin V2 Large, MaxViT XLarge), reduce BATCH_SIZE if OOM
     # Recommended: V2 Large=64, Swin V2 Large=48, MaxViT XLarge=32 (adjust based on GPU memory)
     BATCH_SIZE = 64  # Reduced for best models - increase to 96-128 for smaller models if memory allows
+    INFER_BATCH_SIZE = 16  # Smaller batch for inference/ensembles to avoid GPU indexing limits
     NUM_EPOCHS = 50
     # FIXED: Learning rate tuned for Large models (was 3e-5, too low for Large/XLarge)
     # Large models need slightly higher LR: 5e-5 for V2 Large, 4e-5 for Swin V2 Large, 3e-5 for MaxViT XLarge

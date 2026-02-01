@@ -56,6 +56,7 @@ def predict_ensemble_mixed_sizes(
     names_ref = None
     idx_to_class = None
 
+    infer_batch_size = getattr(config, 'INFER_BATCH_SIZE', config.BATCH_SIZE)
     for model_path in model_paths:
         img_size = get_model_img_size(model_path, config)
         dataset = WBCDataset(
@@ -66,7 +67,7 @@ def predict_ensemble_mixed_sizes(
         )
         loader = DataLoader(
             dataset,
-            batch_size=config.BATCH_SIZE,
+            batch_size=infer_batch_size,
             shuffle=False,
             **get_loader_kwargs(config)
         )
@@ -575,6 +576,7 @@ def predict_ensemble_optimized(
 def predict_test_set(config, model_paths=None, use_ensemble=True, tta=True, use_classy_ensemble=True, 
                     class_weights=None, optimized_weights=None):
     """Predict on test set"""
+    infer_batch_size = getattr(config, 'INFER_BATCH_SIZE', config.BATCH_SIZE)
     # Load test data
     test_df = pd.read_csv(config.PHASE2_TEST_CSV)
     test_dataset = WBCDataset(
@@ -586,7 +588,7 @@ def predict_test_set(config, model_paths=None, use_ensemble=True, tta=True, use_
     
     test_loader = DataLoader(
         test_dataset,
-        batch_size=config.BATCH_SIZE,
+        batch_size=infer_batch_size,
         shuffle=False,
         **get_loader_kwargs(config)
     )
@@ -670,7 +672,7 @@ def predict_eval_set(config, model_paths=None, use_ensemble=True, tta=True, use_
     
     eval_loader = DataLoader(
         eval_dataset,
-        batch_size=config.BATCH_SIZE,
+        batch_size=getattr(config, 'INFER_BATCH_SIZE', config.BATCH_SIZE),
         shuffle=False,
         **get_loader_kwargs(config)
     )

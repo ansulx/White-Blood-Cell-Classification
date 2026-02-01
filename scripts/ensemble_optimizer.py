@@ -153,9 +153,10 @@ def optimize_ensemble_weights(
         is_train=False
     )
     
+    infer_batch_size = getattr(config, 'INFER_BATCH_SIZE', config.BATCH_SIZE)
     eval_loader = DataLoader(
         eval_dataset,
-        batch_size=config.BATCH_SIZE,
+        batch_size=infer_batch_size,
         shuffle=False,
         num_workers=config.NUM_WORKERS,
         pin_memory=config.PIN_MEMORY,
