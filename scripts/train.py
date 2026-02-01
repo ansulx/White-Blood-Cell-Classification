@@ -1396,10 +1396,12 @@ def train_single_model(config):
     
     # Create final comparison plot
     plt.figure(figsize=(12, 6))
-    folds = [f['fold'] for f in fold_details]
-    macro_f1_scores = [f['val_macro_f1'] for f in fold_details]
+    valid_fold_details = [f for f in fold_details if f.get('val_macro_f1') is not None]
+    folds = [f['fold'] for f in valid_fold_details]
+    macro_f1_scores = [f['val_macro_f1'] for f in valid_fold_details]
     
-    plt.bar(folds, macro_f1_scores, alpha=0.7, color='steelblue', edgecolor='black', linewidth=1.5)
+    if folds:
+        plt.bar(folds, macro_f1_scores, alpha=0.7, color='steelblue', edgecolor='black', linewidth=1.5)
     plt.axhline(y=mean_acc, color='red', linestyle='--', linewidth=2, label=f'Mean: {mean_acc:.4f}')
     plt.axhline(y=mean_acc + std_acc, color='orange', linestyle='--', linewidth=1, alpha=0.7, label=f'±1 Std')
     plt.axhline(y=mean_acc - std_acc, color='orange', linestyle='--', linewidth=1, alpha=0.7)
