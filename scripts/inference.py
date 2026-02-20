@@ -656,7 +656,7 @@ def predict_test_set(config, model_paths=None, use_ensemble=True, tta=True, use_
     
     return submission
 
-def predict_eval_set(config, model_paths=None, use_ensemble=True, tta=True, use_classy_ensemble=True, optimized_weights=None):
+def predict_eval_set(config, model_paths=None, use_ensemble=True, tta=True, use_classy_ensemble=True, optimized_weights=None, return_probs=False):
     """Predict on eval set with optional Classy Ensemble"""
     eval_df = pd.read_csv(config.PHASE2_EVAL_CSV)
     
@@ -736,6 +736,8 @@ def predict_eval_set(config, model_paths=None, use_ensemble=True, tta=True, use_
         'labels': pred_labels
     })
     
+    if return_probs:
+        return submission, probs, names, idx_to_class
     return submission
 
 def main():

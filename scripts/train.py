@@ -1566,6 +1566,9 @@ def main():
                 from scripts.final_submission import prepare_final_submission
                 from scripts.validate_submission import comprehensive_validation
                 
+                best_weights = None
+                best_method = None
+
                 # Step 1: Optimize ensemble weights
                 if getattr(config, 'ENSEMBLE_OPTIMIZATION', True):
                     print("\nStep 1: Optimizing ensemble weights...")
@@ -1588,10 +1591,16 @@ def main():
                 # Step 2: Generate final submission
                 print("\nStep 2: Generating final submission...")
                 try:
+                    skip_optimization = best_method is not None
+                    if skip_optimization:
+                        print("Skipping ensemble optimization inside final submission (already computed).")
                     submission, metrics = prepare_final_submission(
                         config,
                         use_optimized_weights=getattr(config, 'ENSEMBLE_OPTIMIZATION', True),
-                        validate=getattr(config, 'FINAL_SUBMISSION_VALIDATION', True)
+                        validate=getattr(config, 'FINAL_SUBMISSION_VALIDATION', True),
+                        precomputed_method=best_method,
+                        precomputed_weights=best_weights,
+                        skip_optimization=skip_optimization
                     )
                     print(f"✓ Final submission generated!")
                     print(f"  Eval Macro F1: {metrics['eval_macro_f1']:.5f}")

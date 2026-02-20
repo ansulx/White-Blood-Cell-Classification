@@ -39,7 +39,7 @@ class Config:
     RETRAIN_WITH_PSEUDO = False  # Skip retraining with pseudo-labels
     
     # Session 3: Final ensemble optimization and submission
-    ENSEMBLE_OPTIMIZATION = True  # If True, optimizes ensemble weights before final submission
+    ENSEMBLE_OPTIMIZATION = False  # If True, optimizes ensemble weights before final submission
     ENSEMBLE_OPT_METHOD = 'all'  # 'classy', 'weighted', 'equal', 'grid_search', or 'all' (tests all methods)
     FINAL_SUBMISSION_VALIDATION = True  # If True, validates submission format before saving
     RUN_FINAL_SUBMISSION = True  # If True, generates final submission after Session 2
