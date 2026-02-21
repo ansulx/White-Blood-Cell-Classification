@@ -1,0 +1,10 @@
+{
+  "eval_macro_f1": 0.9531988801375996,
+  "eval_accuracy": 0.974766355140187,
+  "ensemble_method": "classy",
+  "num_models": 10,
+  "tta_enabled": true,
+  "tta_num": 15,
+  "img_size": 512,
+  "eval_ece": 0.33110918456148875
+}
