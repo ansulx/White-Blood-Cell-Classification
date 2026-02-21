@@ -1,0 +1,110 @@
+{
+  "model_name": "maxvit_xlarge_tf_384",
+  "timestamp": "2026-02-01 07:57:11",
+  "total_folds": 4,
+  "mean_macro_f1": 0.7728022434610833,
+  "std_macro_f1": 0.021388059511143736,
+  "min_macro_f1": 0.7385517666038288,
+  "max_macro_f1": 0.7923184227607583,
+  "mean_balanced_accuracy": 0.7910866413778797,
+  "mean_macro_precision": 0.7505797197948512,
+  "mean_macro_specificity": 0.9939702793006382,
+  "fold_details": [
+    {
+      "fold": 0,
+      "val_macro_f1": 0.7893146144062524,
+      "val_acc": 93.71999480991306,
+      "val_balanced_accuracy": null,
+      "val_macro_precision": null,
+      "val_macro_specificity": null,
+      "train_samples": 30828,
+      "val_samples": 7707,
+      "skipped": true,
+      "summary_loaded": true
+    },
+    {
+      "fold": 1,
+      "val_macro_f1": null,
+      "val_acc": 0.0,
+      "val_balanced_accuracy": null,
+      "val_macro_precision": null,
+      "val_macro_specificity": null,
+      "train_samples": 30828,
+      "val_samples": 7707,
+      "skipped": true,
+      "summary_loaded": false
+    },
+    {
+      "fold": 2,
+      "val_macro_f1": 0.7923184227607583,
+      "val_acc": 93.71999480991306,
+      "val_balanced_accuracy": null,
+      "val_macro_precision": null,
+      "val_macro_specificity": null,
+      "train_samples": 30828,
+      "val_samples": 7707,
+      "skipped": true,
+      "summary_loaded": true
+    },
+    {
+      "fold": 3,
+      "val_macro_f1": 0.7385517666038288,
+      "val_acc": 0.9235759698974958,
+      "val_balanced_accuracy": 0.8087349731754726,
+      "val_macro_precision": 0.6983216805197044,
+      "val_macro_specificity": 0.9935380858248727,
+      "train_samples": 30828,
+      "val_samples": 7707,
+      "skipped": false
+    },
+    {
+      "fold": 4,
+      "val_macro_f1": 0.7710241700734939,
+      "val_acc": 0.9360321785389906,
+      "val_balanced_accuracy": 0.7734383095802868,
+      "val_macro_precision": 0.802837759069998,
+      "val_macro_specificity": 0.9944024727764038,
+      "train_samples": 30828,
+      "val_samples": 7707,
+      "skipped": false
+    }
+  ],
+  "skipped_folds": [
+    0,
+    1,
+    2
+  ],
+  "config": {
+    "batch_size": 32,
+    "learning_rate": 3e-05,
+    "weight_decay": 0.0005,
+    "img_size": 384,
+    "num_epochs": 50,
+    "label_smoothing": 0.1,
+    "use_mixup": true,
+    "use_cutmix": true,
+    "use_warmup": true,
+    "warmup_epochs": 5,
+    "gradient_clipping": true,
+    "early_stopping_patience": 10
+  },
+  "dataset_info": {
+    "total_samples": 38535,
+    "num_classes": 13,
+    "class_distribution": {
+      "SNE": 17354,
+      "LY": 10801,
+      "MO": 3661,
+      "BL": 2683,
+      "EO": 1148,
+      "MY": 588,
+      "BA": 554,
+      "BNE": 522,
+      "VLY": 488,
+      "MMY": 480,
+      "PMY": 152,
+      "PC": 90,
+      "PLY": 14
+    }
+  }
+}
